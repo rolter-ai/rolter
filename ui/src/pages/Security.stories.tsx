@@ -267,10 +267,8 @@ export const FreshDeployment: Story = {
     const canvas = within(canvasElement);
     const origins = await canvas.findByLabelText("Allowed origins");
     await expect(origins).toHaveValue("");
-    await expect(origins).toHaveAttribute(
-      "placeholder",
-      "https://app.example.com\nhttps://console.example.com",
-    );
+    // an empty list reads as empty, not as an example origin (#3663)
+    await expect(origins).toHaveAttribute("placeholder", "Not set");
     await expect(canvas.getByLabelText("Required headers")).toHaveValue("");
     await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
@@ -977,5 +975,41 @@ export const AddingAnAllowedOriginSavesWithoutAsking: Story = {
     });
     await expect(within(document.body).queryByRole("dialog")).toBeNull();
     await expect(puts(origin)).toHaveLength(1);
+  },
+};
+
+const EMPTY: SecuritySettingsDto = {
+  allowed_origins: [],
+  allowed_headers: [],
+  required_headers: {},
+  auth_bypass_routes: [],
+  updated_at: "2026-08-01T09:00:00Z",
+};
+
+/**
+ * #3663: an empty list says it is empty. The examples were placeholders in
+ * the same mono as a real value, so an empty auth-bypass list read as one that
+ * exposes `/v1/models`. They are now under each field's description, after
+ * "For example:".
+ */
+export const EmptyListsSayNotSet: Story = {
+  render: () => (
+    <Harness fetchStub={async () => json(EMPTY)}>
+      <Security />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const [label, example] of [
+      ["Allowed origins", "https://app.example.com"],
+      ["Allowed headers", "X-Stainless-Timeout"],
+      ["Required headers", "X-Tenant-ID: acme"],
+      ["Auth bypass routes", "/v1/models"],
+    ] as const) {
+      const field = await canvas.findByLabelText(label);
+      await expect(field).toHaveValue("");
+      await expect(field).toHaveAttribute("placeholder", "Not set");
+      await expect(field).toHaveAccessibleDescription(new RegExp(`For example: ${example}`));
+    }
   },
 };

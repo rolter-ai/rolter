@@ -50,6 +50,8 @@ interface AuthState {
    * (#2512); `null` when none is saved or `/auth/me` has not answered
    */
   gatewayBaseUrl: string | null;
+  /** the loopback address the control plane reaches the gateway at, from `/auth/me` (#3650) */
+  localGatewayUrl: string | null;
   status: AuthStatus;
   /** a SCIM directory owns the display name, from `/auth/me` */
   displayNameManaged: boolean;
@@ -84,6 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = React.useState<SessionUser | null>(readStoredUser);
   const [memberships, setMemberships] = React.useState<MeMembership[]>([]);
   const [gatewayBaseUrl, setGatewayBaseUrl] = React.useState<string | null>(null);
+  const [localGatewayUrl, setLocalGatewayUrl] = React.useState<string | null>(null);
   // only a stored token is worth checking; an email-only session has nothing
   // to revalidate, so it must not sit behind a placeholder
   const [status, setStatus] = React.useState<AuthStatus>(() =>
@@ -110,6 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setMemberships([]);
     setGatewayBaseUrl(null);
+    setLocalGatewayUrl(null);
     setDisplayNameManaged(false);
   }, []);
 
@@ -137,6 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(me.user);
         setMemberships(me.memberships);
         setGatewayBaseUrl(me.gateway_base_url ?? null);
+        setLocalGatewayUrl(me.local_gateway_url ?? null);
         setDisplayNameManaged(me.display_name_managed === true);
         setEmail(me.user.email);
       })
@@ -168,6 +173,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       memberships,
       gatewayBaseUrl,
+      localGatewayUrl,
       status,
       expired,
       displayNameManaged,
@@ -205,6 +211,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       memberships,
       gatewayBaseUrl,
+      localGatewayUrl,
       status,
       expired,
       displayNameManaged,

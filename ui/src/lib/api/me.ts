@@ -31,6 +31,12 @@ export interface MeResponse {
    */
   gateway_base_url?: string | null;
   /**
+   * The address the control plane reaches the gateway at, sent only when it
+   * is a loopback one, as on a laptop install (#3650). Null otherwise, absent
+   * from an older control plane.
+   */
+  local_gateway_url?: string | null;
+  /**
    * A SCIM directory owns `user.display_name`, so a change to it answers 409.
    * The bio stays editable. Absent from a control plane older than #1823.
    */

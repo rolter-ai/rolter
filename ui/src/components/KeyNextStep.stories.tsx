@@ -3,6 +3,7 @@ import { expect, waitFor, within } from "storybook/test";
 
 import { KeyNextStep } from "./KeyNextStep";
 import type { ClientSettingsDto } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import {
   expectGateAnswered,
@@ -115,7 +116,7 @@ export const UsesTheSavedPublicBaseUrl: Story = {
 };
 
 /** `/auth/me` as a signed-in org admin, carrying whatever address was saved */
-const adminSession = (gatewayBaseUrl: string | null) =>
+const adminSession = (gatewayBaseUrl: string | null, localGatewayUrl: string | null = null) =>
   recording(async (input) => {
     const url = String(input);
     if (url.includes("/api/v1/auth/me")) {
@@ -124,12 +125,15 @@ const adminSession = (gatewayBaseUrl: string | null) =>
         memberships: [],
         display_name_managed: false,
         gateway_base_url: gatewayBaseUrl,
+        local_gateway_url: localGatewayUrl,
       });
     }
     return url.includes("/api/v1/client-settings") ? json(SAVED) : json([]);
   });
 const asAdmin = adminSession(SAVED.public_base_url);
 const asAdminNoUrl = adminSession(null);
+const onALaptop = adminSession(null, "http://127.0.0.1:4000");
+const savedOnALaptop = adminSession(SAVED.public_base_url, "http://127.0.0.1:4000");
 
 /**
  * Client settings are superadmin-only, so an org admin never asks for them,
@@ -204,5 +208,50 @@ export const PromptInRussian: Story = {
     await expect(await within(canvasElement).findByRole("note")).toHaveTextContent(
       ru.common.gatewayBasePrompt,
     );
+  },
+};
+
+/**
+ * #3650: a laptop install has no public base URL saved, but its gateway sits
+ * on 127.0.0.1:4000, which the control plane reports. The key's first request
+ * is addressed there, and the note says it is this machine's gateway.
+ */
+export const ALaptopInstallGetsTheLocalGateway: Story = {
+  render: (args) => (
+    <Harness fetchStub={onALaptop.stub} role="admin">
+      <StaleSession>
+        <KeyNextStep {...args} />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectGateAnswered();
+    await waitFor(async () =>
+      expect(await address(canvasElement)).toHaveTextContent("http://127.0.0.1:4000/v1"),
+    );
+    const snippet = await request(canvasElement);
+    await expect(snippet).toHaveTextContent("curl http://127.0.0.1:4000/v1/chat/completions");
+    await expect(within(canvasElement).getByRole("note")).toHaveTextContent(
+      en.common.secret.nextStep.localNote,
+    );
+  },
+};
+
+/** a saved public base URL wins over the local gateway, and the note goes */
+export const ASavedUrlWinsOverTheLocalGateway: Story = {
+  render: (args) => (
+    <Harness fetchStub={savedOnALaptop.stub} role="admin">
+      <StaleSession>
+        <KeyNextStep {...args} />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectGateAnswered();
+    await waitFor(async () =>
+      expect(await address(canvasElement)).toHaveTextContent("https://gateway.example.com/v1"),
+    );
+    await expect(canvasElement.textContent ?? "").not.toContain("127.0.0.1");
+    await expect(within(canvasElement).queryByRole("note")).toBeNull();
   },
 };

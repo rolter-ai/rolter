@@ -5,7 +5,6 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
-import { GatewayBasePrompt } from "@/components/GatewayBasePrompt";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { serverFieldPath } from "@/lib/field-errors";
+import { useOptionalAuth } from "@/lib/auth";
 import { gatewayBase } from "@/lib/gateway";
 import { useToast } from "@/lib/toast";
 import type { FieldEquality } from "@/lib/use-draft";
@@ -204,6 +204,7 @@ function validate(form: FormState, reserved: string[], requestIdRefused: string[
 // does with headers on the upstream leg
 function ClientSettingsScreen() {
   const { t } = useTranslation();
+  const localGatewayUrl = useOptionalAuth()?.localGatewayUrl ?? null;
   const queryClient = useQueryClient();
   const toast = useToast();
   const settings = useQuery({
@@ -311,6 +312,9 @@ function ClientSettingsScreen() {
   // an empty field has no example: the /gw proxy needs a dashboard session, so
   // it is no address for a client (#2486)
   const exampleBase = gatewayBase(form.publicBaseUrl)?.url ?? null;
+  // a laptop install's gateway, offered for the empty field rather than
+  // invented: the operator saves it or types another (#3650)
+  const localBase = gatewayBase(localGatewayUrl)?.url ?? null;
 
   return (
     <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}>
@@ -338,7 +342,27 @@ function ClientSettingsScreen() {
               error={fields.errorOf("publicBaseUrl")}
             />
           </div>
-          {exampleBase ? <Snippet base={exampleBase} /> : <GatewayBasePrompt />}
+          {exampleBase ? (
+            <Snippet base={exampleBase} />
+          ) : (
+            // the screen that asks for the address does not send the reader to
+            // itself for it (#3650)
+            <div className="flex flex-col items-start gap-2">
+              <p role="note" className="text-sm text-muted-foreground">
+                {t("pages.clientSettings.noBaseUrl")}
+              </p>
+              {localBase && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => edit("publicBaseUrl", { publicBaseUrl: localBase })}
+                >
+                  {t("pages.clientSettings.useLocal", { url: localBase })}
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       </SettingsPanel>
 

@@ -11,6 +11,7 @@ import {
   expectRetryRecovers,
   failingThenRecovering,
   json,
+  StaleSession,
   Toasted,
   type FetchStub,
   type StoryRole,
@@ -88,7 +89,12 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/No headers injected/)).toBeVisible());
-    await expect(canvas.getByRole("note")).toHaveTextContent(en.common.gatewayBasePrompt);
+    // the note on the screen that asks for the address does not send the
+    // reader to that same screen (#3650)
+    await expect(canvas.getByRole("note")).toHaveTextContent(en.pages.clientSettings.noBaseUrl);
+    await expect(canvas.getByRole("note")).not.toHaveTextContent(/Client Settings/);
+    // with no local gateway reported, nothing is offered for the field
+    await expect(canvas.queryByRole("button", { name: /this machine/ })).toBeNull();
     await expect(canvasElement.textContent ?? "").not.toContain("/gw/v1");
     await expect(canvas.getByLabelText("Public base URL")).toHaveAttribute(
       "placeholder",
@@ -403,6 +409,49 @@ export const LoadFailsAndRetries: Story = {
         await expect(await canvas.findByLabelText("Injected header name 1")).toHaveValue(
           "x-partner-id",
         ),
+    );
+  },
+};
+
+/** `/auth/me` on a laptop install: nothing saved, the gateway on loopback */
+const onALaptop: FetchStub = async (input) => {
+  const url = String(input);
+  if (url.includes("/api/v1/auth/me")) {
+    return json({
+      user: { id: "u1", email: "anya@acme.co", is_superadmin: true },
+      memberships: [],
+      display_name_managed: false,
+      gateway_base_url: null,
+      local_gateway_url: "http://127.0.0.1:4000",
+    });
+  }
+  return json(BASE);
+};
+
+/**
+ * #3650: on a laptop install the empty field is offered the gateway on this
+ * machine, which the control plane reports. Taking it fills the field and the
+ * example follows; it is saved only when the operator saves.
+ */
+export const OffersTheLocalGateway: Story = {
+  render: () => (
+    <ScreenHarness fetchStub={onALaptop} role="superadmin">
+      <Toasted>
+        <StaleSession>
+          <ClientSettings />
+        </StaleSession>
+      </Toasted>
+    </ScreenHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const offer = await canvas.findByRole("button", {
+      name: en.pages.clientSettings.useLocal.replace("{{url}}", "http://127.0.0.1:4000"),
+    });
+    await userEvent.click(offer);
+    await expect(canvas.getByLabelText("Public base URL")).toHaveValue("http://127.0.0.1:4000");
+    await waitFor(() =>
+      expect(example(canvasElement)).toContain("curl http://127.0.0.1:4000/v1/chat/completions"),
     );
   },
 };
