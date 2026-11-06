@@ -28,7 +28,7 @@ operator running several can tell the entries apart.
 
 ## Enrolling from the dashboard
 
-**Settings → Account & keys → Two-factor authentication**, the panel after
+**user menu → Account & keys → Two-factor authentication**, the panel after
 Profile and Password and above your virtual keys.
 
 1. **Set up two-factor authentication** shows a QR code and, beside it, the
@@ -236,7 +236,7 @@ curl -sS -X PUT https://rolter.example.com/api/v1/orgs/$ORG/auth-policy \
 
 ### See who a policy would lock out
 
-Before you choose a `required_*` value, read who in the org has an armed factor. The dashboard shows the same roster as a **Second factor** column on **Governance › Users** (armed or not set up, for admins), and the confirmation for a `required_*` policy on **Single Sign-On → Sign-in policy** says how many of the members it binds have none (for `required_superadmin`, only superadmins are counted):
+Before you choose a `required_*` value, read who in the org has an armed factor. The dashboard shows the same roster as a **Second factor** column on **Access › Users** (armed or not set up, for admins), and the confirmation for a `required_*` policy on **Single Sign-On → Sign-in policy** says how many of the members it binds have none (for `required_superadmin`, only superadmins are counted):
 
 ```bash
 curl -sS https://rolter.example.com/api/v1/orgs/$ORG/mfa-status \
@@ -306,7 +306,7 @@ curl -sS -X PUT https://rolter.example.com/api/v1/orgs/$ORG/auth-policy \
 
 Until that moment an unenrolled member signs in with the password alone. The
 login response carries `mfa_enrol_by` with the date, the dashboard says it in
-a notice on the way in, and **Settings → Account & keys → Two-factor authentication** shows it
+a notice on the way in, and **user menu → Account & keys → Two-factor authentication** shows it
 too, so members can enrol at their own pace. After it, the next sign-in walks
 them through enrolment as above.
 

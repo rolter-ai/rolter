@@ -6,8 +6,8 @@ description: "How Rolter's adaptive strategy scores targets from live latency, c
 
 A route on the `adaptive` strategy does not use its static target weights. It scores each target from live signals and sends traffic to the best one, holding a slice back to keep the scores honest. One deployment-wide policy governs every such route.
 
-Monitor live route scores under **Adaptive Routing → Telemetry**, then tune the
-global policy under **Adaptive Routing → Settings**.
+Monitor live route scores under **Traffic → Adaptive Routing**, then tune the
+global policy under **Traffic → Adaptive Policy**.
 
 The dashboard shows the current report from every gateway balancing an
 `adaptive` route: whether the blend is active, how decisions split between the

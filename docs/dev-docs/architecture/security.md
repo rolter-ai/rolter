@@ -988,7 +988,7 @@ The org read now joins on membership: a row with no org is returned to an org
 when it is an account event and its actor, or its target user, holds a role in
 the org, one of its teams or one of its projects. That puts an org member's failed sign-ins, a second
 factor being removed and a break-glass reset in front of the people who
-administer that org, in **Governance → Audit Logs**, where the `auth.*` actions
+administer that org, in **Access → Audit Logs**, where the `auth.*` actions
 are filterable. It never shows one org another org's people. `user.delete` is
 the exception to "written with no org": it is written once per org the account
 belonged to, because the account's memberships are deleted with it and the

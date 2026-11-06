@@ -6,7 +6,7 @@ description: "Sampling parameters and a fallback model Rolter fills in when a cl
 
 Model settings are the inference parameters Rolter supplies when a request does not. They exist so a fleet of callers you do not control — a notebook, a third-party SDK, someone's shell alias — still lands on a sane temperature and a bounded completion length.
 
-Edit them from **Settings → Model Settings** in the dashboard, or through the management API.
+Edit them from **Platform → Model Defaults** in the dashboard, or through the management API.
 
 ---
 
@@ -50,7 +50,7 @@ Leave it empty to keep rejecting such requests. That is usually what you want: s
 
 ## What lives elsewhere
 
-Upstream timeouts and the retry budget are deployment-wide and are configured under **Settings → Performance Tuning** — see [Performance tuning](/reliability/performance-tuning). They are not duplicated here, so there is one source of truth for each.
+Upstream timeouts and the retry budget are deployment-wide and are configured under **Platform → Performance Tuning** — see [Performance tuning](/reliability/performance-tuning). They are not duplicated here, so there is one source of truth for each.
 
 ---
 

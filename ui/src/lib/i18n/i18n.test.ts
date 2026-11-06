@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { leafKeys } from "@/lib/nav";
+import { NAV, screenKeys } from "@/lib/nav";
 
 import en from "./locales/en.json";
 import ru from "./locales/ru.json";
@@ -86,7 +86,7 @@ describe("catalogs", () => {
     // a leaf missing either entry renders its raw key in the ui
     const nav = (en as Catalog).nav as Catalog;
     const screens = (en as Catalog).screens as Catalog;
-    for (const key of leafKeys()) {
+    for (const key of screenKeys()) {
       expect(nav[key], `no nav.${key} entry`).toBeDefined();
       expect(screens[key], `no screens.${key} entry`).toBeDefined();
     }
@@ -94,17 +94,8 @@ describe("catalogs", () => {
 
   test("no orphaned nav label", () => {
     // a nav entry with no matching NavDef is copy nothing renders
-    const known = new Set<string>(leafKeys());
-    const parents = new Set([
-      "observability",
-      "models",
-      "mcp",
-      "alerting",
-      "governance",
-      "guardrails",
-      "adaptive-routing",
-      "settings",
-    ]);
+    const known = new Set<string>(screenKeys());
+    const parents = new Set(NAV.filter((def) => def.children).map((def) => def.key));
     for (const key of Object.keys((en as Catalog).nav as Catalog)) {
       expect(known.has(key) || parents.has(key), `nav.${key} matches no nav entry`).toBe(true);
     }

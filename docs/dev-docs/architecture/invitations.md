@@ -103,7 +103,7 @@ invitation: an accepted one answers `404`.
 
 ## The dashboard
 
-**Governance → Users → Invite user** (`ui/src/pages/Users.tsx`) picks the scope
+**Access → Users → Invite user** (`ui/src/pages/Users.tsx`) picks the scope
 with the shared `OrgScopePicker` and posts `scope_type` and `scope_id`. The
 role field is named for the scope (`pages.users.orgRole`, `teamRole`,
 `projectRole`) and its options are labelled through `shell.roles.*`. The

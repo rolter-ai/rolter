@@ -76,16 +76,16 @@ This guide takes a deployment from nothing to "our people and our applications c
 
     It is safe to run again: it creates the org, team, project and administrator once and never touches an existing account. `rolter seed --import rolter.toml` applies a config file as desired state ([Config export](/configuration/config-export)).
 
-    Open the dashboard (port 4001) and sign in. The account belongs to no organization, so it is not in any organization's people list until you ask for it: a superadmin sees such accounts under **Governance → Users**. Change the password you seeded under **Settings → Account & keys → Password**: it asks for the current password and the new one twice, and signs the account out of its other sessions while keeping the one you are in ([Change your password](/api/change-password)). Then protect the account with a second factor on the same screen, under **Two-factor authentication**. See [Two-factor authentication](/security/two-factor-authentication).
+    Open the dashboard (port 4001) and sign in. The account belongs to no organization, so it is not in any organization's people list until you ask for it: a superadmin sees such accounts under **Access → Users**. Change the password you seeded under **user menu → Account & keys → Password**: it asks for the current password and the new one twice, and signs the account out of its other sessions while keeping the one you are in ([Change your password](/api/change-password)). Then protect the account with a second factor on the same screen, under **Two-factor authentication**. See [Two-factor authentication](/security/two-factor-authentication).
 
   </Step>
   <Step title="Follow the Getting started card">
     A fresh deployment opens on a **Getting started** card with the four steps between an empty control plane and a client calling Rolter, each ticked from the deployment itself:
 
     1. **Make a call with no credentials** — the Playground answers with `fake-llm`. It mints its own short-lived key, which for a project with no routes yet reaches `fake-llm` alone, so this works before steps 2 and 3. It runs inside a project, so on a deployment with none the card asks you to create one first: its **Create project** button opens the same dialog as the **+** beside Project in the scope switcher.
-    2. **Connect a provider** — **Models → Model Providers → + Add provider**. The key is sealed and never shown again; **Test connection** proves it before anything depends on it.
-    3. **Add a route** — **Models → Routing Rules → + Add route**, or **+ Add route** on Model Catalog, which opens the same sheet: the public model name your clients will send, its strategy, and the provider it lands on. With more than one provider, pick it yourself; the sheet does not choose for you.
-    4. **Mint a virtual key** — **Governance → Virtual Keys**. Applications authenticate with it, never with your provider key.
+    2. **Connect a provider** — **Traffic → Model Providers → + Add provider**. The key is sealed and never shown again; **Test connection** proves it before anything depends on it.
+    3. **Add a route** — **Traffic → Routing Rules → + Add route**, or **+ Add route** on Model Catalog, which opens the same sheet: the public model name your clients will send, its strategy, and the provider it lands on. With more than one provider, pick it yourself; the sheet does not choose for you.
+    4. **Mint a virtual key** — **Access → Virtual Keys**. Applications authenticate with it, never with your provider key.
 
     Connecting more than one model, or a whole self-hosted fleet, is its own guide: [Connecting models](/guides/connecting-models).
 
@@ -97,19 +97,19 @@ This guide takes a deployment from nothing to "our people and our applications c
   <Step title="Bring people in">
     Pick the way your company signs in:
 
-    - **No identity provider:** **Governance → Users → Invite user** at a role and scope, for the whole organization, a team or a project. You get a one-time link to send to the person; they choose their own password. Someone who already has a rolter account keeps it: the link adds the role, and they sign in as usual. Links not yet accepted are listed under the users table, where you can revoke one sent to the wrong address. See [Inviting people](/security/rbac#inviting-people-on-the-users-screen).
-    - **An OIDC identity provider** (Okta, Entra ID, Google, Keycloak): register it under **Governance → Single Sign-On**, map its groups to roles at scopes, and decide whether passwords stay on. See [Single Sign-On](/security/single-sign-on).
-    - **Automatic joiners and leavers:** add SCIM provisioning under **Governance → User Provisioning**. See [User Provisioning](/security/user-provisioning).
+    - **No identity provider:** **Access → Users → Invite user** at a role and scope, for the whole organization, a team or a project. You get a one-time link to send to the person; they choose their own password. Someone who already has a rolter account keeps it: the link adds the role, and they sign in as usual. Links not yet accepted are listed under the users table, where you can revoke one sent to the wrong address. See [Inviting people](/security/rbac#inviting-people-on-the-users-screen).
+    - **An OIDC identity provider** (Okta, Entra ID, Google, Keycloak): register it under **Access → Single Sign-On**, map its groups to roles at scopes, and decide whether passwords stay on. See [Single Sign-On](/security/single-sign-on).
+    - **Automatic joiners and leavers:** add SCIM provisioning under **Access → User Provisioning**. See [User Provisioning](/security/user-provisioning).
 
     Make engineers **members** of their projects: members mint their own keys, and read their own project's request logs and captured bodies. **Viewers** read without changing anything, and see request logs without the captured bodies unless a project admin allows it. See [RBAC](/security/rbac).
 
   </Step>
   <Step title="Price your models and cap spend">
-    Give every model that costs money a price (**Models → Model Prices**) so spend is never counted as zero by accident, then add budgets and rate limits under **Models → Budgets & Limits** at the org, team, project or key. A request past a budget gets HTTP 402; past a rate limit, HTTP 429. The whole topic is its own guide: [Tracking and capping spend](/guides/tracking-spend).
+    Give every model that costs money a price (**Spend → Model Prices**) so spend is never counted as zero by accident, then add budgets and rate limits under **Spend → Budgets & Limits** at the org, team, project or key. A request past a budget gets HTTP 402; past a rate limit, HTTP 429. The whole topic is its own guide: [Tracking and capping spend](/guides/tracking-spend).
 
   </Step>
   <Step title="Watch the traffic">
-    **Observability → Dashboard** shows traffic, spend, latency and errors; **LLM Logs** shows every request with its status, target, tokens and cost. Every change anyone made is under **Governance → Audit Logs**. Sign-ins and second-factor changes are recorded there too. See [Logs & Cost](/observability/logs-and-cost) and [What to look at](/observability/what-to-look-at).
+    **Observability → Dashboard** shows traffic, spend, latency and errors; **LLM Logs** shows every request with its status, target, tokens and cost. Every change anyone made is under **Access → Audit Logs**. Sign-ins and second-factor changes are recorded there too. See [Logs & Cost](/observability/logs-and-cost) and [What to look at](/observability/what-to-look-at).
 
   </Step>
 </Steps>

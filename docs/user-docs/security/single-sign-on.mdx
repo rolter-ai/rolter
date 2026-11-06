@@ -6,7 +6,7 @@ description: "Register an OIDC provider from the dashboard, map its groups to Ro
 
 Rolter can hand the dashboard's front door to your identity provider. A user picks **Continue with Acme Okta** on the sign-in screen, is bounced through the provider's authorization-code flow, and comes back with an ordinary Rolter session — the same session type a password login issues, so nothing downstream of authentication changes.
 
-Everything below lives on one screen: **Governance → Single Sign-On**.
+Everything below lives on one screen: **Access → Single Sign-On**.
 
 ## What the screen manages
 
@@ -30,7 +30,7 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
 
 <Steps>
   <Step title="Pick a slug and copy the redirect URI">
-    Open **Governance → Single Sign-On** and choose **Add provider**. Type the **Slug** first: the short name the provider will have in Rolter's URLs. The **Redirect URI** row under it fills in as you type, `https://your-rolter-host/auth/sso/<slug>/callback`, with a copy button beside it.
+    Open **Access → Single Sign-On** and choose **Add provider**. Type the **Slug** first: the short name the provider will have in Rolter's URLs. The **Redirect URI** row under it fills in as you type, `https://your-rolter-host/auth/sso/<slug>/callback`, with a copy button beside it.
 
     A slug is lowercase letters, digits and hyphens, starts with a letter or digit, and is at most 63 characters: `okta`, `acme-entra`, `keycloak-2`. The hint under the field says so. Anything else is marked as you type, with a corrected value suggested when one can be worked out (`Acme Okta` becomes `acme-okta`), the redirect URI row says the slug is not valid instead of showing an address, and **Add provider** stays disabled. Nothing is rewritten for you: the slug is part of the redirect URI you register in your identity provider, so what you see is exactly what is saved.
 
@@ -185,7 +185,7 @@ A group arriving from your identity provider grants nothing on its own. **You** 
 - Every mapping grants inside the provider's own org. A mapping can never reach another tenant, whatever the identity provider sends or what you pick here.
 - Each mapping is listed with the scope it grants at, so a team-scoped one is never mistaken for an org-wide one. A scope the dashboard cannot name is marked **Unresolved scope** instead of being drawn as a bare id; the id stays in the chip's tooltip, and the removal prompt names it inline.
 - Removing a mapping stops that group being granted the role — at that scope — on the next sign-in. The prompt names both before anything is withdrawn, and roles someone already holds are not taken back.
-- **The last admin stays.** When a sign-in would withdraw an `admin` grant at the whole organization from the last active account holding one, Rolter keeps that grant instead. The sign-in itself is not refused for it, the audit log records `membership.last_admin_kept`, and the next sign-in withdraws the grant once someone else holds `admin` on the organization. Grant `admin` to the next person first, then change the group. This holds when a superadmin removes the mapping too, since the change only takes effect at the next sign-in; a superadmin who means to remove the last admin can revoke that grant directly from **Governance → Users** ([managing roles](/security/rbac#managing-roles-on-the-users-screen)).
+- **The last admin stays.** When a sign-in would withdraw an `admin` grant at the whole organization from the last active account holding one, Rolter keeps that grant instead. The sign-in itself is not refused for it, the audit log records `membership.last_admin_kept`, and the next sign-in withdraws the grant once someone else holds `admin` on the organization. Grant `admin` to the next person first, then change the group. This holds when a superadmin removes the mapping too, since the change only takes effect at the next sign-in; a superadmin who means to remove the last admin can revoke that grant directly from **Access → Users** ([managing roles](/security/rbac#managing-roles-on-the-users-screen)).
 
 <Warning>
 A user who matches no mapping falls back to the provider's **Default role**. Leave that unset and they are **refused** instead of quietly admitted with no memberships — which is the safe default, and the reason a provider with neither a mapping nor a default role cannot log anybody in.
@@ -238,7 +238,7 @@ Scripts and other non-browser clients that call the callback directly (without a
 
 ## Removing a provider
 
-Deleting a provider is confirmed by name first, because it takes a whole route in away at once: anyone signing in through it loses it immediately, and its group mappings go with it. If you only need it to stop accepting logins for a while, [disable it](#taking-a-provider-out-of-service) instead — that keeps the mappings and the sealed secret. Accounts it already created stay, with the roles they already hold — deletion is not a way to lock people out. Deactivate those accounts from **Governance → Users** if that is what you meant.
+Deleting a provider is confirmed by name first, because it takes a whole route in away at once: anyone signing in through it loses it immediately, and its group mappings go with it. If you only need it to stop accepting logins for a while, [disable it](#taking-a-provider-out-of-service) instead — that keeps the mappings and the sealed secret. Accounts it already created stay, with the roles they already hold — deletion is not a way to lock people out. Deactivate those accounts from **Access → Users** if that is what you meant.
 
 <Warning>
 If the org's policy has password sign-in turned off, deleting its only enabled provider is refused with `409 Conflict`, for the same reason as [disabling it](#taking-a-provider-out-of-service). Turn password sign-in back on first, or register the replacement provider before you delete this one. A provider that is already disabled can be deleted freely.

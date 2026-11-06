@@ -572,6 +572,11 @@ export function NavSidebar({
     const foldedTitle = it.experimental
       ? t("shell.experimentalItem", { label: it.label })
       : it.label;
+    // folded, a group holding an experimental screen carries the dot as well:
+    // every screen sits in a group (#3656), so the strip shows only groups and
+    // the marked entry is out of sight until the flyout opens
+    const dotted =
+      it.experimental || (foldedGroup && (it.children ?? []).some((c) => c.experimental));
     const leafHref = !hasKids && hrefFor ? hrefFor(it.key) : undefined;
     const entryClass = cn(
       itemBase,
@@ -587,7 +592,7 @@ export function NavSidebar({
               shape the footer's update hint uses, so "there is something to
               know here" reads the same way twice. decorative: `title` above
               already carries the word */}
-        {folded && it.experimental && (
+        {folded && dotted && (
           <span
             aria-hidden="true"
             className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]"

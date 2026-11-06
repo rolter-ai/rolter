@@ -17,18 +17,18 @@ offered, even when the refusal is correct.
 
 ## T1 — arrive
 
-| #    | step                               | where                                         | expect                                                                                              | status   |
-| ---- | ---------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------- | -------- |
-| T1.1 | sign in (SSO or password)          | login screen                                  | the dashboard, scoped to team `default`                                                             | verified |
-| T1.2 | see what the team is already doing | **Observability → Dashboard**, **LLM Logs**   | the team's traffic and spend, with captured bodies (admin at the team), and nothing of other teams' | verified |
-| T1.3 | see what the team may call         | **Models → Model Catalog**, **Routing Rules** | the routes of the team's projects                                                                   | verified |
+| #    | step                               | where                                          | expect                                                                                              | status   |
+| ---- | ---------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------- | -------- |
+| T1.1 | sign in (SSO or password)          | login screen                                   | the dashboard, scoped to team `default`                                                             | verified |
+| T1.2 | see what the team is already doing | **Observability → Dashboard**, **LLM Logs**    | the team's traffic and spend, with captured bodies (admin at the team), and nothing of other teams' | verified |
+| T1.3 | see what the team may call         | **Traffic → Model Catalog**, **Routing Rules** | the routes of the team's projects                                                                   | verified |
 
 ## T2 — bring the team in
 
 | #    | step                                               | where                                                                                | expect                                                                  | status                                        |
 | ---- | -------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- | --------------------------------------------- |
 | T2.1 | create a project for a new workstream              | scope switcher, Project **⋯** → **New project** · `POST /api/v1/teams/{id}/projects` | the project, owned by the team                                          | verified (API and the switcher's **⋯**, A2.1) |
-| T2.2 | invite engineers as members of that project        | **Governance → Users → Invite user**, scope = the project, role = member             | a link per person; authorized at the project, so no org admin is needed | verified — #2054 adds the scope picker        |
+| T2.2 | invite engineers as members of that project        | **Access → Users → Invite user**, scope = the project, role = member                 | a link per person; authorized at the project, so no org admin is needed | verified — #2054 adds the scope picker        |
 | T2.3 | get the links to people                            | by hand                                                                              | —                                                                       | partial — #1828                               |
 | T2.4 | with SSO or SCIM instead, map the team's IdP group | done by an org admin once ([platform-admin A1-b/A1-d](platform-admin.md))            | new joiners land in the project with no invitation                      | works                                         |
 
@@ -38,7 +38,7 @@ offered, even when the refusal is correct.
 | ---- | ------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------- | -------------------- |
 | T3.1 | route a public model name to an existing provider | **Routing Rules** in the team's project | allowed: routes are project-scoped and the lead is admin above the project             | verified             |
 | T3.2 | add a new provider                                | **Model Providers → + Add provider**    | refused, naming the Admin role at the org — a request to the platform team             | verified (by design) |
-| T3.3 | mint a shared key for the team's service          | **Governance → Virtual Keys**           | as [platform-admin A4.2](platform-admin.md#a4--give-access-to-people-and-applications) | verified             |
+| T3.3 | mint a shared key for the team's service          | **Access → Virtual Keys**               | as [platform-admin A4.2](platform-admin.md#a4--give-access-to-people-and-applications) | verified             |
 
 ## T4 — keep it inside a budget
 
@@ -56,12 +56,12 @@ offered, even when the refusal is correct.
 | ---- | ------------------------------------------------ | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------- |
 | T5.1 | spend by model and by key over the month         | **Dashboard** filtered by model and key; **LLM Logs** filtered by key (24 hours) | the team's rows only                                                                | verified         |
 | T5.2 | is an upstream the reason the team's calls fail? | **Provider Health**, health rollups                                              | a role on the team's projects reads the health of the providers their routes target | verified (#1833) |
-| T5.3 | an alert on the team's error rate                | **Alerting → Alert Rules**, scoped to the team                                   | a rule the lead owns, over the team's traffic                                       | verified (#1829) |
+| T5.3 | an alert on the team's error rate                | **Observability → Alert Rules**, scoped to the team                              | a rule the lead owns, over the team's traffic                                       | verified (#1829) |
 
 ## T6 — someone leaves
 
-| #    | step                                             | where                                                                 | expect                                                   | status                                                           |
-| ---- | ------------------------------------------------ | --------------------------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------- |
-| T6.1 | remove their membership                          | **Governance → Users**, the × beside the person's role at the project | they lose the project in the dashboard at once           | verified — #1850 lists the team's members, #2053 adds the revoke |
-| T6.2 | their personal keys stop working                 | the gateway                                                           | a key they minted for themselves is refused              | verified (#1841)                                                 |
-| T6.3 | shared keys they minted as an admin keep working | the gateway                                                           | the team's services do not go down because a person left | verified                                                         |
+| #    | step                                             | where                                                             | expect                                                   | status                                                           |
+| ---- | ------------------------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------- |
+| T6.1 | remove their membership                          | **Access → Users**, the × beside the person's role at the project | they lose the project in the dashboard at once           | verified — #1850 lists the team's members, #2053 adds the revoke |
+| T6.2 | their personal keys stop working                 | the gateway                                                       | a key they minted for themselves is refused              | verified (#1841)                                                 |
+| T6.3 | shared keys they minted as an admin keep working | the gateway                                                       | the team's services do not go down because a person left | verified                                                         |

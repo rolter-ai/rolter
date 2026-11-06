@@ -7,7 +7,7 @@ description: "Configure outbound destinations for Rolter's request logs, traces 
 Rolter keeps its analytics in ClickHouse. A **connector** adds an outbound
 destination on top of that: somewhere your telemetry is also shipped.
 
-Connectors live under **Observability → Connectors** in the dashboard, and on
+Connectors live under **Platform → Connectors** in the dashboard, and on
 `/api/v1/connectors`.
 
 <Note>
@@ -63,7 +63,7 @@ enabled here.
 
 ### Reading the config from the dashboard
 
-You do not have to `curl` for it. **Observability → Connectors** has a
+You do not have to `curl` for it. **Platform → Connectors** has a
 **Collector config** button beside **Add connector**: it fetches the rendered
 document, shows it in a scrollable pane, and copies it to the clipboard in one
 click. Save it as your collector's config file — `infra/otel/collector.compose.yaml`

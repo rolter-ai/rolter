@@ -4,13 +4,13 @@ sidebarTitle: "Log Settings"
 description: "Control what fraction of requests Rolter logs, whether raw prompt and completion bodies are captured, which fields are redacted from them, how long each half is kept, and whether dashboard usage events are recorded."
 ---
 
-Request logging is governed by one deployment-wide policy, edited from **Observability → Logs Settings** in the dashboard or through the management API. It decides four things: how much traffic is logged, whether raw payloads are captured alongside the metadata, how long each is kept, and whether the dashboard's own usage events are recorded.
+Request logging is governed by one deployment-wide policy, edited from **Platform → Logging** in the dashboard or through the management API. It decides four things: how much traffic is logged, whether raw payloads are captured alongside the metadata, how long each is kept, and whether the dashboard's own usage events are recorded.
 
 ---
 
 ## Without ClickHouse
 
-Sampling, payload capture and both retention windows act on rows written to ClickHouse. A control plane started without `clickhouse_url` (the `CLICKHOUSE_URL` environment variable) writes no log, so none of them has anything to act on. **Logs Settings** says so at the top of the screen, names that setting and links this page. The controls stay editable: the policy is stored and applies from the first row once ClickHouse is added and the control plane restarted.
+Sampling, payload capture and both retention windows act on rows written to ClickHouse. A control plane started without `clickhouse_url` (the `CLICKHOUSE_URL` environment variable) writes no log, so none of them has anything to act on. **Logging** says so at the top of the screen, names that setting and links this page. The controls stay editable: the policy is stored and applies from the first row once ClickHouse is added and the control plane restarted.
 
 The dashboard reads this from the analytics endpoints, which answer `503` when no ClickHouse is configured.
 
@@ -35,11 +35,11 @@ Three things count every request at any rate, because the gateway records them b
 
 When spend read off the Dashboard has to be the real spend, keep the rate at `1` and bound storage with [retention](#retention) instead.
 
-Below 100 %, **Logs Settings** states the consequence under the field: the share the log keeps, such as "about 1 in 4 requests", and that counts, spend and tokens on the screens that read the log are estimates scaled up from the sample. The warning follows the form, so it shows for an unsaved edit as well as for a rate already saved. A cleared field is refused rather than saved as `0`, which would log nothing. Text that is not a plain decimal, such as `0x10`, is refused too.
+Below 100 %, **Logging** states the consequence under the field: the share the log keeps, such as "about 1 in 4 requests", and that counts, spend and tokens on the screens that read the log are estimates scaled up from the sample. The warning follows the form, so it shows for an unsaved edit as well as for a rate already saved. A cleared field is refused rather than saved as `0`, which would log nothing. Text that is not a plain decimal, such as `0x10`, is refused too.
 
 The **Dashboard**, **Business Units**, **Customers** and **LLM Logs** carry the same note whenever the saved rate is below 100 %: the figures are estimates scaled up from a sample, and the LLM Logs list shows only the sampled requests. Every role that can open those screens sees the note: they read the rate from [`GET /api/v1/analytics/sampling`](/api/dashboard-analytics#sampling), which answers the rate alone, while the rest of the logging settings stays a superadmin's.
 
-A control plane started with `--config` serves the file's `[logging] sample_rate` until someone saves **Logs Settings**, since the stored settings then still hold their seeded defaults. The note follows the rate gateways actually apply, so it shows for a file rate below 100 % too. **Logs Settings** itself shows the stored settings, `100 %` in that state, and saving the form replaces the file's values.
+A control plane started with `--config` serves the file's `[logging] sample_rate` until someone saves **Logging**, since the stored settings then still hold their seeded defaults. The note follows the rate gateways actually apply, so it shows for a file rate below 100 % too. **Logging** itself shows the stored settings, `100 %` in that state, and saving the form replaces the file's values.
 
 ---
 
@@ -84,7 +84,7 @@ Both kinds of redaction run on the gateway before the body is truncated and hand
 
 ### Previewing redaction
 
-**Preview redaction** on the Logs Settings screen, or `POST /api/v1/logging-settings/redaction-preview`, runs the policy against a pasted sample and returns what capture would store plus what it found, by kind. The dashboard sends the policy as edited, saved or not; the API uses the stored policy for any part you leave out. The preview stores nothing, writes no audit entry and does not log the sample, so paste a test body rather than a live secret all the same: the sample does travel to the control plane for the check. It needs the same superadmin role as saving the settings.
+**Preview redaction** on the Logging screen, or `POST /api/v1/logging-settings/redaction-preview`, runs the policy against a pasted sample and returns what capture would store plus what it found, by kind. The dashboard sends the policy as edited, saved or not; the API uses the stored policy for any part you leave out. The preview stores nothing, writes no audit entry and does not log the sample, so paste a test body rather than a live secret all the same: the sample does travel to the control plane for the check. It needs the same superadmin role as saving the settings.
 
 Redaction happening before the write is the important part: turning a field on later does not retroactively clean what is already stored, and turning it off does not expose history that was never captured.
 

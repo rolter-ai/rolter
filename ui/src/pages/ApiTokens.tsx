@@ -242,7 +242,7 @@ function MintSheet({
 }
 
 /**
- * Governance › API tokens (#3289).
+ * Access › API tokens (#3289).
  *
  * Scoped control-plane tokens (#1836) for CI jobs and provisioning scripts:
  * which automation holds what, when it expires and when it last ran. Minting

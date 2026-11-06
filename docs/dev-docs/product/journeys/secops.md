@@ -30,35 +30,35 @@ trail or should leave a row in it.
 | S1.1 | confirm nothing runs open                 | `rolter check`; the dashboard banner                                        | an admin token set; open mode refused on any non-loopback bind unless `ROLTER_ALLOW_OPEN_MODE` acknowledges it, as the local compose file does; the compose team shape sets a token and leaves it off | verified |
 | S1.2 | confirm an anonymous caller gets nothing  | the #1820 sweep, or `curl` every GET in `/openapi.json` without credentials | 401 from everything the document does not mark public                                                                                                                                                 | verified |
 | S1.3 | confirm the redacted config is not public | `GET /api/v1/config` without credentials                                    | `401`; with a session of any role, the redacted document                                                                                                                                              | verified |
-| S1.4 | restrict browser origins and ingress      | **Settings → Security**; CORS                                               | the dashboard's origin allowed, nothing else                                                                                                                                                          | verified |
+| S1.4 | restrict browser origins and ingress      | **Platform → Security**; CORS                                               | the dashboard's origin allowed, nothing else                                                                                                                                                          | verified |
 | S1.5 | bound outbound requests                   | the egress policy                                                           | a provider, connector or MCP server cannot be pointed at an internal address the policy forbids                                                                                                       | verified |
 
 ## S2 — identity
 
-| #    | step                                        | where                                                | expect                                                                      | status                                                   |
-| ---- | ------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
-| S2.1 | single sign-on only, second factor required | **Governance → Single Sign-On → Org sign-in policy** | one button; accounts without a factor are refused until they enrol          | works — #1852 fixed (A1a.4 walks the enrolment hand-off) |
-| S2.2 | throttle password guessing                  | repeated wrong passwords for one account             | HTTP 429 with `Retry-After` once the account's allowance is spent; audited  | verified (#1854)                                         |
-| S2.3 | a leaver loses everything                   | SCIM deprovision (platform-admin A1-d)               | sessions gone at once; personal keys refused at the gateway                 | works — #1841 fixed (T6.2 walks the membership variant)  |
-| S2.4 | break-glass for a lost second factor        | `rolter mfa reset --email … --reason …` on the host  | factor and sessions cleared, the reason audited; not reachable over the API | verified                                                 |
+| #    | step                                        | where                                               | expect                                                                      | status                                                   |
+| ---- | ------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
+| S2.1 | single sign-on only, second factor required | **Access → Single Sign-On → Org sign-in policy**    | one button; accounts without a factor are refused until they enrol          | works — #1852 fixed (A1a.4 walks the enrolment hand-off) |
+| S2.2 | throttle password guessing                  | repeated wrong passwords for one account            | HTTP 429 with `Retry-After` once the account's allowance is spent; audited  | verified (#1854)                                         |
+| S2.3 | a leaver loses everything                   | SCIM deprovision (platform-admin A1-d)              | sessions gone at once; personal keys refused at the gateway                 | works — #1841 fixed (T6.2 walks the membership variant)  |
+| S2.4 | break-glass for a lost second factor        | `rolter mfa reset --email … --reason …` on the host | factor and sessions cleared, the reason audited; not reachable over the API | verified                                                 |
 
 ## S3 — prove secrets stay out of the logs
 
 | #    | step                                             | where                                         | expect                                                                                                       | status           |
 | ---- | ------------------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------- |
-| S3.1 | payload capture is off unless someone chose it   | **Observability → Logs Settings**             | off by default; the dogfood profile turns it on deliberately                                                 | verified         |
+| S3.1 | payload capture is off unless someone chose it   | **Platform → Logging**                        | off by default; the dogfood profile turns it on deliberately                                                 | verified         |
 | S3.2 | known credential fields never reach storage      | `payload_capture_redact_fields`               | the value of a matching JSON key replaced before the write, recursively                                      | verified         |
 | S3.3 | a key pasted into a prompt never reaches storage | `payload_capture_redact_detectors`            | a secret inside free text replaced by a typed marker such as `[redacted:aws_key]` before the write           | verified (#1835) |
-| S3.4 | see what the redaction does before trusting it   | **Logs Settings** → Preview redaction         | a dry run against a sample body, storing and logging nothing                                                 | verified (#1835) |
+| S3.4 | see what the redaction does before trusting it   | **Logging** → Preview redaction               | a dry run against a sample body, storing and logging nothing                                                 | verified (#1835) |
 | S3.5 | who reads the bodies that are stored             | sign in as each persona; **LLM Logs** → a row | members and admins of the project read them; viewers get "hidden for your role" unless the project allows it | verified (#1820) |
 | S3.6 | erase one subject's logs on request              | `POST /api/v1/log-erasures`                   | a subject's rows and payloads deleted, completion reported from ClickHouse, audited                          | verified (#1085) |
 
 ## S4 — inspection in the request path
 
-| #    | step                                                   | where                            | expect                                                                               | status   |
-| ---- | ------------------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ | -------- |
-| S4.1 | block a known-bad pattern before it reaches a provider | **Guardrails → Guardrail Rules** | the request refused with `guardrail_blocked: <rule>`; the rejected text never stored | verified |
-| S4.2 | hand content to an external de-identification service  | the PII sanitizer                | the provider sees the substituted text; optionally reversed on the way back          | works    |
+| #    | step                                                   | where                        | expect                                                                               | status   |
+| ---- | ------------------------------------------------------ | ---------------------------- | ------------------------------------------------------------------------------------ | -------- |
+| S4.1 | block a known-bad pattern before it reaches a provider | **Safety → Guardrail Rules** | the request refused with `guardrail_blocked: <rule>`; the rejected text never stored | verified |
+| S4.2 | hand content to an external de-identification service  | the PII sanitizer            | the provider sees the substituted text; optionally reversed on the way back          | works    |
 
 ## S5 — keys and recovery
 
@@ -69,7 +69,7 @@ trail or should leave a row in it.
 
 ## S6 — the trail
 
-| #    | step                                | where                                          | expect                                                   | status                                            |
-| ---- | ----------------------------------- | ---------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------- |
-| S6.1 | who changed what, when              | **Governance → Audit Logs** (admin at the org) | every mutation in this session's scripts, with its actor | verified (sign-ins and second factors too, #1854) |
-| S6.2 | a project was opened to its viewers | the audit log, `project.settings.update`       | the row, naming the value it was set to                  | verified                                          |
+| #    | step                                | where                                      | expect                                                   | status                                            |
+| ---- | ----------------------------------- | ------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------- |
+| S6.1 | who changed what, when              | **Access → Audit Logs** (admin at the org) | every mutation in this session's scripts, with its actor | verified (sign-ins and second factors too, #1854) |
+| S6.2 | a project was opened to its viewers | the audit log, `project.settings.update`   | the row, naming the value it was set to                  | verified                                          |

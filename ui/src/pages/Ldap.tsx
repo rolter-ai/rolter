@@ -464,7 +464,7 @@ function DirectoryCard({
 }
 
 /**
- * Governance › LDAP (#3261).
+ * Access › LDAP (#3261).
  *
  * LDAP sign-in has been an API-only feature since #1826: a directory was
  * registered with a curl. This screen registers, edits, takes in and out of
