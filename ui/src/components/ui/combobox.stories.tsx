@@ -69,6 +69,7 @@ function Controlled({
   disabled = false,
   label = "Strategy",
   width = "w-80",
+  truncate,
 }: {
   options?: ComboboxOption[];
   initial?: string;
@@ -76,6 +77,7 @@ function Controlled({
   disabled?: boolean;
   label?: string;
   width?: string;
+  truncate?: "end" | "middle";
 }) {
   const [value, setValue] = React.useState(initial);
   return (
@@ -87,6 +89,7 @@ function Controlled({
           onChange={setValue}
           clearable={clearable}
           disabled={disabled}
+          truncate={truncate}
         />
       </Field>
     </div>
@@ -96,6 +99,45 @@ function Controlled({
 export const Default: Story = { render: () => <Controlled initial="round_robin" /> };
 
 export const Empty: Story = { render: () => <Controlled /> };
+
+// three upstream ids that share a long prefix and differ only at the end
+const YANDEX_IDS = ["latest", "rc", "deprecated"].map((tail) => {
+  const id = `gpt://b1g2a3b4c5d6e7f8g9h0/yandexgpt-lite/${tail}`;
+  return { value: id, label: id };
+});
+
+/**
+ * Ids that share a prefix are cut in the middle, so their different tails stay
+ * on screen; the row the keyboard is on shows the id whole, and the pointer
+ * gets it as the row's title (#3666).
+ */
+export const LongIdsAreCutInTheMiddle: Story = {
+  render: () => (
+    <Controlled options={YANDEX_IDS} label="Upstream model" width="w-56" truncate="middle" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Upstream model" }));
+    const options = await canvas.findAllByRole("option");
+    await expect(options).toHaveLength(3);
+    for (const [index, tail] of ["latest", "rc", "deprecated"].entries()) {
+      const option = options[index]!;
+      // the whole id is in the row, for a screen reader and for the pointer
+      await expect(option).toHaveTextContent(YANDEX_IDS[index]!.label);
+      await expect(option).toHaveAttribute("title", YANDEX_IDS[index]!.label);
+      // and its tail is drawn whole, inside the row's box
+      const end = within(option).getByText(new RegExp(`/${tail}$`));
+      const box = end.getBoundingClientRect();
+      const row = option.getBoundingClientRect();
+      await expect(box.right).toBeLessThanOrEqual(row.right + 1);
+      await expect(box.width).toBeGreaterThan(0);
+    }
+    // the keyboard's row shows the id whole, wrapped rather than cut
+    await userEvent.keyboard("{ArrowDown}");
+    const active = options.find((o) => o.getAttribute("data-active") === "true")!;
+    await waitFor(() => expect(active.querySelector(".break-all")).not.toBeNull());
+  },
+};
 
 export const Grouped: Story = {
   render: () => <Controlled options={GROUPED} initial="fake-llm" label="Model" />,

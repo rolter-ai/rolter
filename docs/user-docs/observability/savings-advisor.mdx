@@ -7,7 +7,7 @@ description: "Read where a window's spend went and what the substitutable part w
 The savings advisor reads the request log for a window and answers three questions: where the money went, which requests could plausibly have gone to a cheaper model that is already configured on the same route, and what those requests would have cost there.
 
 <Warning>
-  The advisor **re-prices**. It does not evaluate whether the cheaper model answers as well, and it never changes a route. Treat what it lists as a shortlist to test against your own traffic, for example with a weighted target or a [variant](/concepts/providers-and-routes), before you move anything. Every answer repeats this in its `limits` field.
+  The advisor **re-prices**. It does not evaluate whether the cheaper model answers as well, and it never changes a route. Treat what it lists as a shortlist to test against your own traffic, for example with a weighted target or a [variant](/concepts/providers-and-routes), before you move anything. Every answer repeats this in its `limits` field, in English, with a stable code for each entry at the same index in `limit_codes` (`shortlist_not_recommendation`, `same_route_pool`, `unknown_price_excluded`, `sampled_estimates`, `request_shape_unrecorded`), which the dashboard words in its own language.
 </Warning>
 
 It needs the control plane's `CLICKHOUSE_URL`, like every other analytics read; without it the endpoint answers `503`.

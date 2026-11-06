@@ -67,26 +67,54 @@ const MAX_OUTPUT_MARGIN: f64 = 4.0;
 /// How many callers the spend breakdown names, most expensive first.
 const CALLER_LIMIT: u32 = 50;
 
-/// What the report says about itself, on every answer.
-const LIMITS: &[&str] = &[
-    "This report re-prices recorded traffic at another model's price. It does not evaluate \
-     whether that model answers as well, so it is a shortlist to test, never a recommendation \
-     to switch.",
-    "Only models already configured in the same route's pool are considered.",
-    "A request or a candidate whose price is unknown is excluded and counted, never priced at \
-     zero.",
-    "Counts and costs are scaled by the request log's sampling weight, so under sampling they \
-     are estimates.",
+/// What the report says about itself, on every answer: a stable code, which
+/// the dashboard words in its own language (#3647), and the English sentence
+/// an API caller reads. `limits` carries the sentences and `limit_codes` the
+/// codes, in the same order.
+const LIMITS: &[(&str, &str)] = &[
+    (
+        "shortlist_not_recommendation",
+        "This report re-prices recorded traffic at another model's price. It does not evaluate \
+         whether that model answers as well, so it is a shortlist to test, never a \
+         recommendation to switch.",
+    ),
+    (
+        "same_route_pool",
+        "Only models already configured in the same route's pool are considered.",
+    ),
+    (
+        "unknown_price_excluded",
+        "A request or a candidate whose price is unknown is excluded and counted, never priced \
+         at zero.",
+    ),
+    (
+        "sampled_estimates",
+        "Counts and costs are scaled by the request log's sampling weight, so under sampling \
+         they are estimates.",
+    ),
 ];
 
-/// What the report adds to its `limits` while the request log cannot say what
+/// What the report adds to its limits while the request log cannot say what
 /// a request asked for: the table lacks `clickhouse/031_request_shape.sql`, so
 /// no row carries the shape flags the `uses_tools`, `image_input`,
 /// `audio_input`, `structured_output` and `multi_turn` exclusions read (#3317).
-const NO_SHAPE_LIMIT: &str = "The request log does not record whether a request carried tools, \
-     images, audio, several turns or a structured-output schema (clickhouse/031_request_shape.sql \
-     is not applied), so substitutability is judged on the outcome, the token counts and the size \
-     thresholds alone.";
+const NO_SHAPE_LIMIT: (&str, &str) = (
+    "request_shape_unrecorded",
+    "The request log does not record whether a request carried tools, images, audio, several \
+     turns or a structured-output schema (clickhouse/031_request_shape.sql is not applied), so \
+     substitutability is judged on the outcome, the token counts and the size thresholds alone.",
+);
+
+/// Every code `limit_codes` can carry, published to the dashboard through
+/// `savings-reasons.json` so each is worded in every catalog.
+#[cfg(test)]
+fn limit_codes() -> Vec<&'static str> {
+    LIMITS
+        .iter()
+        .chain(std::iter::once(&NO_SHAPE_LIMIT))
+        .map(|(code, _)| *code)
+        .collect()
+}
 
 /// The request-shape columns `clickhouse/031_request_shape.sql` adds, each a
 /// reason a request is not substitutable when set (#3317).
@@ -351,7 +379,10 @@ async fn report(access: &AnalyticsAccess, state: &ControlState, q: &SavingsQuery
     name_callers(state, &mut report).await;
     if !SHAPE_COLUMNS.iter().all(|column| columns.has(column)) {
         if let Some(limits) = report["limits"].as_array_mut() {
-            limits.push(json!(NO_SHAPE_LIMIT));
+            limits.push(json!(NO_SHAPE_LIMIT.1));
+        }
+        if let Some(codes) = report["limit_codes"].as_array_mut() {
+            codes.push(json!(NO_SHAPE_LIMIT.0));
         }
     }
     Json(report).into_response()
@@ -740,7 +771,8 @@ fn analyse(
 
     json!({
         "currency": config.currency.base_code(),
-        "limits": LIMITS,
+        "limits": LIMITS.iter().map(|(_, sentence)| *sentence).collect::<Vec<_>>(),
+        "limit_codes": LIMITS.iter().map(|(code, _)| *code).collect::<Vec<_>>(),
         "assumptions": {
             "max_prompt_tokens": thresholds.max_prompt_tokens,
             "max_completion_tokens": thresholds.max_completion_tokens,
@@ -880,6 +912,24 @@ mod tests {
         );
     }
 
+    /// #3647: every sentence in `limits` has its code at the same index, so
+    /// the dashboard can word each one, and the codes are distinct.
+    #[test]
+    fn every_limit_has_a_code_in_step() {
+        let report = analyse(&[], &[], &config(), Thresholds::default());
+        let limits = report["limits"].as_array().expect("limits are listed");
+        let codes = report["limit_codes"].as_array().expect("codes are listed");
+        assert_eq!(limits.len(), codes.len());
+        for (index, (code, sentence)) in LIMITS.iter().enumerate() {
+            assert_eq!(codes[index], json!(code));
+            assert_eq!(limits[index], json!(sentence));
+        }
+        let all = limit_codes();
+        let distinct: BTreeSet<&str> = all.iter().copied().collect();
+        assert_eq!(distinct.len(), all.len(), "a limit code is used twice");
+        assert!(all.contains(&NO_SHAPE_LIMIT.0));
+    }
+
     #[test]
     fn the_report_states_that_it_reprices_and_never_judges_quality() {
         let report = analyse(&[], &[], &config(), Thresholds::default());
@@ -941,9 +991,11 @@ mod tests {
     #[test]
     fn the_checked_in_reasons_are_the_published_list() {
         let mut rendered = serde_json::to_string_pretty(&json!({
-            "$comment": "written by the rolter-control test suite from EXCLUSION_REASONS in \
-                         src/savings.rs (`just gen-savings-reasons`) - do not edit by hand",
+            "$comment": "written by the rolter-control test suite from EXCLUSION_REASONS and \
+                         the limit codes in src/savings.rs (`just gen-savings-reasons`) - do not \
+                         edit by hand",
             "reasons": EXCLUSION_REASONS,
+            "limits": limit_codes(),
         }))
         .expect("the list serializes");
         rendered.push('\n');
@@ -954,8 +1006,8 @@ mod tests {
         let checked_in = std::fs::read_to_string(REASONS_ARTIFACT).unwrap_or_default();
         assert!(
             checked_in == rendered,
-            "crates/rolter-control/savings-reasons.json is out of date with EXCLUSION_REASONS; \
-             run `just gen-savings-reasons` and commit it"
+            "crates/rolter-control/savings-reasons.json is out of date with EXCLUSION_REASONS \
+             or the limit codes; run `just gen-savings-reasons` and commit it"
         );
     }
 
@@ -1013,7 +1065,7 @@ mod tests {
         assert_eq!(report["excluded"]["requests"]["multi_turn"], 3.0);
         // the report no longer says the shape is unrecorded unless it is
         let limits = report["limits"].as_array().expect("limits are listed");
-        assert!(!limits.contains(&json!(NO_SHAPE_LIMIT)));
+        assert!(!limits.contains(&json!(NO_SHAPE_LIMIT.1)));
     }
 
     #[test]

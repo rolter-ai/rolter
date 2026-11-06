@@ -39,7 +39,7 @@ import {
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
-import { EXCLUDED_REASONS } from "@/lib/savings-reasons";
+import { EXCLUDED_REASONS, LIMIT_CODES } from "@/lib/savings-reasons";
 import { useScope } from "@/lib/scope";
 import {
   readWindowSelection,
@@ -184,7 +184,7 @@ export default function Savings() {
 
   return (
     <PageBody>
-      <LimitsNotice limits={report.data?.limits} />
+      <LimitsNotice limits={report.data?.limits} codes={report.data?.limit_codes} />
       <SampledLogNotice kind="figures" />
 
       <div className="flex flex-wrap items-end gap-3">
@@ -315,10 +315,17 @@ export default function Savings() {
 /**
  * What the advisor is and is not, ahead of every figure (#3316). The first
  * sentence is the dashboard's; the list under it is the control plane's own
- * `limits`, which arrive with each answer and are quoted as they are sent.
+ * `limits`, which arrive with each answer. Each comes with a code the catalogs
+ * word in the dashboard's language (#3647); a code this build does not know,
+ * or a control plane that sends none, is quoted in the English it was sent in.
  */
-function LimitsNotice({ limits }: { limits?: string[] }) {
+function LimitsNotice({ limits, codes }: { limits?: string[]; codes?: string[] }) {
   const { t } = useTranslation();
+  const known = new Set<string>(LIMIT_CODES);
+  const worded = (limits ?? []).map((sentence, index) => {
+    const code = codes?.[index];
+    return code && known.has(code) ? t(`pages.savings.limitNotes.${code}`) : sentence;
+  });
   return (
     <section
       aria-labelledby="savings-limits-title"
@@ -335,9 +342,9 @@ function LimitsNotice({ limits }: { limits?: string[] }) {
             {t("pages.savings.limitsTitle")}
           </h2>
           <p className="text-sm text-muted-foreground">{t("pages.savings.limitsLead")}</p>
-          {limits && limits.length > 0 && (
+          {worded.length > 0 && (
             <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-              {limits.map((limit) => (
+              {worded.map((limit) => (
                 <li key={limit}>{limit}</li>
               ))}
             </ul>
@@ -347,6 +354,10 @@ function LimitsNotice({ limits }: { limits?: string[] }) {
     </section>
   );
 }
+
+/** a threshold field's three rows (label, input, hint) are the form's own */
+const THRESHOLD_FIELD =
+  "row-span-3 grid grid-rows-subgrid space-y-0 [&>:first-child]:self-end [&>:last-child]:self-start";
 
 /**
  * The three thresholds that decide what counts as substitutable. They apply
@@ -381,7 +392,9 @@ function ThresholdsForm({
   return (
     <form
       aria-label={t("pages.savings.thresholdsTitle")}
-      className="flex flex-wrap items-end gap-3"
+      // a subgrid, so the three inputs share a row whichever label or hint wraps
+      // (#3647): each field spans the label, input and hint rows
+      className="grid gap-x-3 gap-y-1.5 sm:grid-cols-[repeat(3,14rem)_auto] sm:grid-rows-[auto_auto_auto]"
       onSubmit={(e) => {
         e.preventDefault();
         setAttempted(true);
@@ -397,7 +410,7 @@ function ThresholdsForm({
         label={t("pages.savings.maxPrompt")}
         hint={t("pages.savings.maxPromptHint")}
         error={attempted ? errors.max_prompt_tokens : ""}
-        className="w-56"
+        className={THRESHOLD_FIELD}
       >
         <Input
           inputMode="numeric"
@@ -411,7 +424,7 @@ function ThresholdsForm({
         label={t("pages.savings.maxCompletion")}
         hint={t("pages.savings.maxCompletionHint")}
         error={attempted ? errors.max_completion_tokens : ""}
-        className="w-56"
+        className={THRESHOLD_FIELD}
       >
         <Input
           inputMode="numeric"
@@ -425,7 +438,7 @@ function ThresholdsForm({
         label={t("pages.savings.margin")}
         hint={t("pages.savings.marginHint")}
         error={attempted ? errors.output_margin : ""}
-        className="w-56"
+        className={THRESHOLD_FIELD}
       >
         <Input
           inputMode="decimal"
@@ -435,7 +448,11 @@ function ThresholdsForm({
           onChange={set("output_margin")}
         />
       </Field>
-      <Button type="submit" variant="outline">
+      <Button
+        type="submit"
+        variant="outline"
+        className="justify-self-start sm:col-start-4 sm:row-start-2"
+      >
         {t("pages.savings.recalculate")}
       </Button>
     </form>
@@ -570,7 +587,13 @@ function Report({
         <SpendTable
           label={t("pages.savings.byModel")}
           nameHeader={t("pages.savings.model")}
-          rows={spend.by_model.map((row) => ({ ...row, name: row.model }))}
+          // a request that never resolved a model (refused before routing) is
+          // counted under an empty name, which the row names rather than leaving
+          // the cell blank
+          rows={spend.by_model.map((row) => ({
+            ...row,
+            name: row.model || t("pages.savings.noModel"),
+          }))}
           money={money}
           count={count}
         />

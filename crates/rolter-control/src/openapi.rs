@@ -4803,7 +4803,12 @@ fn governance_schemas(p: &Prim) -> Value {
                 "limits": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "what the report does not claim, in prose"
+                    "description": "what the report does not claim, in English prose"
+                },
+                "limit_codes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "a stable code for each entry of `limits`, at the same index"
                 },
                 "assumptions": {
                     "type": "object",

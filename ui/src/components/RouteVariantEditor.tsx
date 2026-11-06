@@ -430,6 +430,8 @@ function VariantCard({
                   aria-label={t("routeSheet.variants.targetUpstreamAria", { n, m })}
                   className="min-w-0 font-mono"
                   placeholder={publicName || t("modelSheet.targets.upstreamPlaceholder")}
+                  // the field shows the start of a long id; the pointer gets all of it
+                  title={tg.upstream || undefined}
                   value={tg.upstream}
                   onChange={(e) => updateTarget(j, { upstream: e.target.value })}
                 />

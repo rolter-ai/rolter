@@ -36,6 +36,7 @@ import {
 import { errorText } from "@/lib/error-copy";
 import { slugify } from "@/lib/slug";
 import { useToast } from "@/lib/toast";
+import { BASE_EXAMPLES } from "@/lib/provider-base-examples";
 import { providerKindDescription, providerKindName } from "@/lib/provider-kinds";
 import { useFormTelemetry } from "@/lib/ux-react";
 import {
@@ -58,8 +59,8 @@ export type ProviderSheetMode = "add" | "edit";
  * is the server address plus whatever prefix it was started with, and neither
  * "include the version" nor "leave it off" says that.
  */
-const BASE_HINTS: Readonly<Record<string, { hint: string; placeholder: string }>> = {
-  infinity: { hint: "providerSheet.apiBase.urlPrefix", placeholder: "http://infinity:7997" },
+const BASE_HINTS: Readonly<Record<string, { hint: string }>> = {
+  infinity: { hint: "providerSheet.apiBase.urlPrefix" },
 };
 
 /**
@@ -503,12 +504,13 @@ export function ProviderSheet({
         <Field
           label={t("providerSheet.fields.apiBase")}
           htmlFor="provider-api-base"
+          // the kind by its display name, not its stored slug (#3666)
           hint={t(
             BASE_HINTS[draft.kind]?.hint ??
               (baseIncludesV1
                 ? "providerSheet.apiBase.includesV1"
                 : "providerSheet.apiBase.excludesV1"),
-            { kind: draft.kind },
+            { kind: kindName(draft.kind) },
           )}
           error={
             baseDoublesV1
@@ -522,8 +524,11 @@ export function ProviderSheet({
             id="provider-api-base"
             value={draft.apiBase}
             onChange={(e) => set({ apiBase: e.target.value })}
+            // the pinned base, else the example config's base for the kind,
+            // else one that follows the kind's /v1 rule (#3666)
             placeholder={
-              BASE_HINTS[draft.kind]?.placeholder ??
+              pinnedBase ??
+              BASE_EXAMPLES[draft.kind] ??
               (baseIncludesV1 ? "https://api.example.com/v1" : "https://api.example.com")
             }
           />

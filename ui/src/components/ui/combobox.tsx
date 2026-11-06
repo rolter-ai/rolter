@@ -95,6 +95,13 @@ export interface ComboboxProps {
   className?: string;
   /** extra classes for the popup, mainly to widen it past the control */
   listClassName?: string;
+  /**
+   * where a label too long for its row is cut. `middle` keeps the tail on
+   * screen, for ids that share a long prefix and differ only at the end
+   * (`…/yandexgpt-lite/latest` and `…/rc`, #3666); the active row and the
+   * pointer's row show the whole label
+   */
+  truncate?: "end" | "middle";
   "aria-label"?: string;
   "aria-describedby"?: string;
   "aria-invalid"?: boolean | "true" | "false";
@@ -258,6 +265,58 @@ function layout(options: ComboboxOption[]): Section[] {
   return sections;
 }
 
+/** how many trailing characters a middle-cut label always keeps on screen */
+const KEPT_TAIL = 16;
+
+/**
+ * A label cut in the middle: the head shrinks to an ellipsis and the tail
+ * stays, so two ids that differ only at the end still read differently. The
+ * row the keyboard is on shows the label whole, wrapped. The text is whole in
+ * the document either way, so a screen reader reads all of it.
+ */
+function MiddleLabel({
+  text,
+  indices,
+  whole,
+}: {
+  text: string;
+  indices: number[];
+  whole: boolean;
+}) {
+  const chars = Array.from(text);
+  if (whole) {
+    return (
+      <span className="block break-all">
+        <HighlightedText text={text} indices={indices} />
+      </span>
+    );
+  }
+  if (chars.length <= KEPT_TAIL * 2) {
+    return (
+      <span className="block truncate">
+        <HighlightedText text={text} indices={indices} />
+      </span>
+    );
+  }
+  const cut = chars.length - KEPT_TAIL;
+  return (
+    <span className="flex min-w-0">
+      <span className="min-w-0 truncate">
+        <HighlightedText
+          text={chars.slice(0, cut).join("")}
+          indices={indices.filter((i) => i < cut)}
+        />
+      </span>
+      <span className="flex-none whitespace-pre">
+        <HighlightedText
+          text={chars.slice(cut).join("")}
+          indices={indices.filter((i) => i >= cut).map((i) => i - cut)}
+        />
+      </span>
+    </span>
+  );
+}
+
 export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(function Combobox(
   {
     options,
@@ -272,6 +331,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     title,
     className,
     listClassName,
+    truncate = "end",
     allowCustom,
     commitOnBlur = false,
     commitOnInput = false,
@@ -516,6 +576,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
       onMouseMove={() => {
         if (!option.disabled) setActive(index);
       }}
+      title={truncate === "middle" ? option.label : undefined}
       className={cn(
         "flex cursor-pointer items-start gap-2 rounded-[var(--radius-sm)] px-2 py-1.5",
         size === "sm" ? "text-xs" : "text-sm",
@@ -536,9 +597,13 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         </span>
       )}
       <span className="min-w-0 flex-1">
-        <span className="block truncate">
-          <HighlightedText text={option.label} indices={hits[index] ?? []} />
-        </span>
+        {truncate === "middle" ? (
+          <MiddleLabel text={option.label} indices={hits[index] ?? []} whole={index === active} />
+        ) : (
+          <span className="block truncate">
+            <HighlightedText text={option.label} indices={hits[index] ?? []} />
+          </span>
+        )}
         {option.description && (
           <span className="block truncate text-xs text-muted-foreground">{option.description}</span>
         )}
