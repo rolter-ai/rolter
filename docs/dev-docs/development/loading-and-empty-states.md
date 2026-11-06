@@ -58,7 +58,9 @@ A skeleton stands in the grid its content is laid out in, or the tiles change
 columns when the data lands. `StatGridSkeleton` lays out in `STAT_GRID`
 (`ui/src/components/ui/stat-card.tsx`), the grid a strip of stat cards uses, so a
 screen puts its loaded `StatCard`s in the same constant. Its stories compare the
-tracks of the two at every width (#1994).
+tracks of the two at every width (#1994). The grid is two columns from a phone up
+and four from `xl` (#3660): one column stacked the Overview's eight cards into
+several screens at 390 px.
 
 The state row is as wide as the part of the table the reader sees, not as its
 column floor (#2362). Below the floor the table scrolls sideways, and a row the

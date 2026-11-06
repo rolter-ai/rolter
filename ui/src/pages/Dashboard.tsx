@@ -883,12 +883,15 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                             v == null ? (
                               t("pages.dashboard.notMeasured")
                             ) : (
-                              <>
-                                {fmt.number(Math.round(num(v as number | string)))}{" "}
+                              // one unit: "5 275 мс" wrapped its unit under the
+                              // number in a narrow column (#3660)
+                              <span className="whitespace-nowrap">
+                                {fmt.number(Math.round(num(v as number | string)))}
+                                {"\u00a0"}
                                 <span className="text-muted-foreground">
                                   {t("pages.dashboard.colMs")}
                                 </span>
-                              </>
+                              </span>
                             ),
                         },
                         {

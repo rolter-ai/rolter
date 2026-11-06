@@ -147,7 +147,7 @@ export function ScreenHeader({
 
   return (
     <>
-      <header className="flex flex-none flex-wrap items-center gap-x-4 gap-y-2 px-[22px] py-4">
+      <header className="flex flex-none flex-wrap items-center gap-x-4 gap-y-2 px-[22px] py-3 sm:py-4">
         {onOpenNav && (
           <button
             type="button"
@@ -161,7 +161,12 @@ export function ScreenHeader({
         )}
         <div className="min-w-0 flex-1">
           <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">{subtitle}</p>
+          {/* two lines on a phone, where three or four of them pushed the
+              screen's content ~160px down (#3660); a screen reader and a wider
+              window get all of it */}
+          <p className="mt-0.5 line-clamp-2 text-sm text-muted-foreground sm:line-clamp-none">
+            {subtitle}
+          </p>
         </div>
         {/* below `sm` the actions take a row of their own: sharing one with a
             title that has nowhere left to go is what put the status pill on
