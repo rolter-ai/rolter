@@ -42,6 +42,7 @@ import type {
 } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { resolveColorToken } from "@/lib/story-tokens";
 import { atMobile } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -1432,9 +1433,11 @@ export const CacheReportingNeedsEveryProviderToReport: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await (await rowOf(canvas, "gpt-4o")).findByText(/^Reports cache/)).toBeVisible();
-    await expect(
-      await (await rowOf(canvas, "claude-sonnet")).findByText("Not probed yet"),
-    ).toBeVisible();
+    // a route no verdict covers says nothing, rather than "not probed yet" on
+    // every row (#3659)
+    const unprobed = await rowOf(canvas, "claude-sonnet");
+    await expect(unprobed.queryByText("Not probed yet")).toBeNull();
+    await expect(unprobed.queryByText(/^Reports cache|^No cache metrics/)).toBeNull();
   },
 };
 
@@ -1463,8 +1466,10 @@ export const CacheReportingPartlyProbedIsNotProbedYet: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const row = await rowOf(canvas, "gpt-4o");
-    await expect(await row.findByText("Not probed yet")).toBeVisible();
+    // not proved, so not claimed, and not badged either (#3659)
+    await waitFor(() => expect(row.getByText("gpt-4o")).toBeVisible());
     await expect(row.queryByText(/^Reports cache/)).toBeNull();
+    await expect(row.queryByText("Not probed yet")).toBeNull();
   },
 };
 
@@ -1487,6 +1492,55 @@ export const CacheReportingFailedReadShowsNothing: Story = {
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await waitFor(() => expect(canvas.getByText("sim-a +1 more")).toBeVisible());
     await expect(canvas.queryByText(/Not probed yet|Reports cache|No cache metrics/)).toBeNull();
+  },
+};
+
+/**
+ * A catalog row says only what is wrong with it (#3659): a switched-off model
+ * is marked, an enabled one carries no dot, the origin is a neutral word in the
+ * dashboard's language, and an unpriced price cell is a muted dash whose note
+ * says why, with the count stated once above the table and a link to set them.
+ */
+export const ARowSaysOnlyWhatIsWrong: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/model-prices", () => []],
+        ["/currency", () => ({ base: "USD", rates: {} })],
+        ["/health/uptime", () => ({ data: [] })],
+        ["/models", () => MODELS],
+        ["/providers", () => []],
+        ["/routes", () => [{ ...FANOUT_ROUTE, project_id: "project-1", enabled: false }]],
+      ])}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const off = await rowOf(canvas, "gpt-4o");
+    await expect(await off.findByText(en.pages.models.disabled)).toBeVisible();
+    await expect(
+      (await rowOf(canvas, "claude-sonnet")).queryByText(en.pages.models.disabled),
+    ).toBeNull();
+    // the origin is a word, not "db" in the success green
+    const origin = off.getByText(en.pages.models.origin.db);
+    await expect(getComputedStyle(origin).color).not.toBe(
+      resolveColorToken("--status-success-text"),
+    );
+    await expect(off.queryByText(/^db$/)).toBeNull();
+    // both models are unpriced: a dash each, the reason as its note, and one line
+    const dash = off.getByText("—", { selector: "[aria-hidden]" });
+    await expect(noteOf(dash)).toBe(en.pages.models.unpriced.hint);
+    await expect(off.queryByText(/^no price set$/i, { selector: ":not(.sr-only)" })).toBeNull();
+    await expect(
+      canvas.getByText(en.pages.models.unpriced.summary_other.replace("{{count}}", "2"), {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await expect(
+      canvas.getByRole("link", { name: en.pages.models.unpriced.setPrices }),
+    ).toHaveAttribute("href", "/pricing-overrides");
   },
 };
 

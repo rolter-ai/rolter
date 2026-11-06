@@ -29,6 +29,7 @@ import {
   primaryColumn,
 } from "@/components/screen";
 import { CacheReportingBadge } from "@/components/CacheReportingBadge";
+import { RelativeTime } from "@/components/RelativeTime";
 import { ProbeCacheDialog } from "@/components/ProbeCacheDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,9 +48,11 @@ import {
   canProbeCache,
   type GatewayConfigDto,
   type ProviderGroupRow,
+  type ProviderCheck,
   type ProviderRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
+import { useFormat } from "@/lib/i18n/format";
 import { summarizeCacheReporting } from "@/lib/cache-reporting";
 import { providerKindName } from "@/lib/provider-kinds";
 import { providerUsage, type UsageEntry } from "@/lib/provider-usage";
@@ -58,6 +61,7 @@ import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
 import { useProviderCacheProbes } from "@/lib/use-provider-cache-probes";
+import { useProviderChecks } from "@/lib/use-provider-checks";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_QUERY_KEY = ["providers"];
@@ -76,7 +80,7 @@ function credentialSource(p: ProviderRow): "sealed" | "env" | "none" | "unknown"
   return p.has_stored_key === false ? "none" : "unknown";
 }
 
-function CredentialSource({ provider }: { provider: ProviderRow }) {
+function CredentialSource({ provider, envSet }: { provider: ProviderRow; envSet?: boolean }) {
   const { t } = useTranslation();
   switch (credentialSource(provider)) {
     case "sealed":
@@ -86,7 +90,19 @@ function CredentialSource({ provider }: { provider: ProviderRow }) {
         </Badge>
       );
     case "env":
-      return (
+      // a variable the control plane cannot see is a key no request will carry,
+      // which looks configured until every call answers 401 (#3649)
+      return envSet === false ? (
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <Tooltip
+            className="truncate font-mono text-xs text-[color:var(--status-warning-text)]"
+            content={t("pages.providers.credentialEnvUnsetHint", { name: provider.api_key_env })}
+          >
+            {provider.api_key_env}
+          </Tooltip>
+          <Badge tone="warning">{t("pages.providers.credentialEnvUnset")}</Badge>
+        </span>
+      ) : (
         <Tooltip
           className="truncate font-mono text-xs text-muted-foreground"
           content={t("pages.providers.credentialEnvHint", { name: provider.api_key_env })}
@@ -103,6 +119,47 @@ function CredentialSource({ provider }: { provider: ProviderRow }) {
     default:
       return <span className="text-xs text-muted-foreground">—</span>;
   }
+}
+
+/**
+ * How the provider's last "Test connection" went, kept by the control plane
+ * (#3649): the sheet's verdict without opening it, and when it was. A provider
+ * never tested says so quietly; an unknown read says nothing.
+ */
+function LastTest({ check }: { check: ProviderCheck | undefined | null }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  if (check === null) return null;
+  const last = check?.last_test;
+  if (!last) {
+    return (
+      <span className="text-xs text-[color:var(--text-subtle)]">
+        {t("pages.providers.lastTest.never")}
+      </span>
+    );
+  }
+  const detail = last.reachable
+    ? last.models_found != null
+      ? t("pages.providers.lastTest.models", { count: last.models_found })
+      : undefined
+    : (last.error ?? undefined);
+  return (
+    <span className="flex min-w-0 flex-col items-start gap-0.5">
+      <Badge tone={last.reachable ? "success" : "danger"} hint={detail}>
+        {last.reachable
+          ? t("pages.providers.lastTest.reachable", { ms: fmt.number(last.latency_ms) })
+          : last.status != null
+            ? t("pages.providers.lastTest.failedStatus", { status: last.status })
+            : t("pages.providers.lastTest.failed")}
+      </Badge>
+      <Tooltip
+        className="text-2xs text-[color:var(--text-subtle)]"
+        content={fmt.dateTime(last.tested_at)}
+      >
+        <RelativeTime at={last.tested_at} intervalMs={30_000} />
+      </Tooltip>
+    </span>
+  );
 }
 
 function UsageNames({
@@ -262,6 +319,7 @@ export default function Providers() {
   // one read of every verdict, shown per row; a failed read shows no badge
   // rather than a "not probed yet" it has no evidence for
   const cacheProbes = useProviderCacheProbes(scope.orgId);
+  const checks = useProviderChecks(scope.orgId);
 
   const labels = useSubjectLabels(scope.orgId, "provider");
 
@@ -313,7 +371,7 @@ export default function Providers() {
 
   // the actions column fits "Изменить", the labels and the delete button; at
   // 108px they ran left over the scope column in Russian (#3660)
-  const GRID = `${primaryColumn(1)} 1.1fr 1.7fr 1fr 1fr 1.3fr 1fr 168px`;
+  const GRID = `${primaryColumn(1)} 1.1fr 1.7fr 1fr 1fr 1fr 1.3fr 1fr 168px`;
 
   return (
     <PageBody>
@@ -361,7 +419,7 @@ export default function Providers() {
 
       {/* the name column holds at least its floor, which the other columns used to
           give up at this width, so the table's floor carries it too (#2812) */}
-      <ListTable label={t("screens.providers.title")} minWidth={1000}>
+      <ListTable label={t("screens.providers.title")} minWidth={1120}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.providers.colName")}
@@ -393,6 +451,7 @@ export default function Providers() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
+          <ListHeaderCell>{t("pages.providers.colLastTest")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.providers.colCache")}</ListHeaderCell>
           <SortLabel
             label={t("pages.providers.colScope")}
@@ -428,12 +487,22 @@ export default function Providers() {
               />
             </ListCell>
             <ListCell className="flex min-w-0 items-center">
-              <CredentialSource provider={provider} />
+              <CredentialSource
+                provider={provider}
+                envSet={checks.byProvider?.get(provider.id)?.env_set}
+              />
+            </ListCell>
+            <ListCell className="grid min-w-0">
+              <LastTest check={checks.byProvider ? checks.byProvider.get(provider.id) : null} />
             </ListCell>
             <ListCell className="flex min-w-0 flex-col items-start gap-1">
-              <CacheReportingBadge
-                state={summarizeCacheReporting([provider.id], cacheProbes.byProvider)}
-              />
+              {/* a verdict once there is one; before that the probe button is
+                  the cell, rather than "not probed yet" on every row (#3649) */}
+              {cacheProbes.byProvider?.has(provider.id) && (
+                <CacheReportingBadge
+                  state={summarizeCacheReporting([provider.id], cacheProbes.byProvider)}
+                />
+              )}
               {canProbeCache(provider.kind) && (
                 <RowCapabilityScope at={rowGateScope(provider, orgScope.byTeam)}>
                   <GatedButton

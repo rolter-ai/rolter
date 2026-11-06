@@ -34,12 +34,14 @@ import {
 } from "./story-harness";
 import type {
   LabelRow,
+  ProviderCheck,
   ProviderCacheProbeResult,
   ProviderCacheVerdict,
   ProviderGroupRow,
   ProviderRow,
   ProviderTestResult,
 } from "@/lib/api";
+import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import {
@@ -1268,8 +1270,9 @@ const rowOf = async (canvas: ReturnType<typeof within>, name: string) =>
 
 /**
  * The three states read apart: reports (success), does not report (warning) and
- * never probed (outline). A provider with no verdict is "not probed yet", never
- * "no cache metrics"; the title says which model and field the verdict rests on.
+ * never probed. A provider with no verdict shows only the button that probes it
+ * (#3649), never "no cache metrics"; the note says which model and field the
+ * verdict rests on.
  */
 export const CacheReportingShowsThreeStates: Story = {
   render: () => (
@@ -1291,11 +1294,14 @@ export const CacheReportingShowsThreeStates: Story = {
     await expect(
       await (await rowOf(canvas, "anthropic-eu")).findByText(/^No cache metrics/),
     ).toBeVisible();
+    // the unprobed one is not reported as a "no", and is not badged at all: its
+    // cell is the probe button
+    const unprobed = await rowOf(canvas, "vllm-lab");
     await expect(
-      await (await rowOf(canvas, "vllm-lab")).findByText("Not probed yet"),
+      await unprobed.findByRole("button", { name: "Probe cache reporting of vllm-lab" }),
     ).toBeVisible();
-    // the unprobed one is not reported as a "no"
-    await expect((await rowOf(canvas, "vllm-lab")).queryByText(/No cache metrics/)).toBeNull();
+    await expect(unprobed.queryByText(/No cache metrics/)).toBeNull();
+    await expect(unprobed.queryByText("Not probed yet")).toBeNull();
   },
 };
 
@@ -1385,9 +1391,7 @@ export const ProbeCacheAsksForAModelAndRecordsTheVerdict: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await (await rowOf(canvas, "openai-prod")).findByText("Not probed yet"),
-    ).toBeVisible();
+    await expect((await rowOf(canvas, "openai-prod")).queryByText(/^Reports cache/)).toBeNull();
     await userEvent.click(
       await canvas.findByRole("button", { name: "Probe cache reporting of openai-prod" }),
     );
@@ -1467,6 +1471,134 @@ export const ProbeCacheIsOfferedOnlyForProbeableKindsAndGated: Story = {
       canvas.queryByRole("button", { name: "Probe cache reporting of bedrock-us" }),
     ).toBeNull();
     await expectRefused(canvasElement, "Probe cache reporting of openai-prod");
+  },
+};
+
+// three providers, as the control plane kept their last tests (#3649)
+const CHECKS: ProviderCheck[] = [
+  {
+    provider_id: "p-1",
+    env_set: true,
+    last_test: {
+      provider_id: "p-1",
+      reachable: true,
+      status: 200,
+      latency_ms: 643,
+      credential: "env",
+      models_found: 23,
+      error: null,
+      tested_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    },
+  },
+  {
+    provider_id: "p-2",
+    env_set: false,
+    last_test: {
+      provider_id: "p-2",
+      reachable: false,
+      status: 401,
+      latency_ms: 120,
+      credential: "env (unset)",
+      models_found: null,
+      error: "the upstream refused the request: no key was sent",
+      tested_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+    },
+  },
+];
+
+const withChecks = (checks: ProviderCheck[]) =>
+  routes([
+    ["/provider-checks", () => checks],
+    ["/provider-cache-probes", () => []],
+    ["/providers", () => [...PROVIDERS, UNPROBED]],
+    ["/config/problems", () => ({ problems: [] })],
+  ]);
+
+/**
+ * The list says how each provider's last "Test connection" went, kept by the
+ * control plane, without opening its sheet (#3649): reachable with its
+ * latency, failed with its status and the test's reason as the note, or never
+ * tested.
+ */
+export const TheLastTestIsInTheList: Story = {
+  render: () => (
+    <Harness fetchStub={withChecks(CHECKS)}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const ok = await (await rowOf(canvas, "openai-prod")).findByText("Reachable · 643 ms");
+    await expect(noteOf(ok)).toBe("23 models listed");
+    const failed = (await rowOf(canvas, "anthropic-eu")).getByText("Failed · 401");
+    await expect(noteOf(failed)).toBe("the upstream refused the request: no key was sent");
+    // when, as a relative time with the exact stamp as its note
+    const when = (await rowOf(canvas, "anthropic-eu")).getByText(/ago$/);
+    await expect(noteOf(when)).toBe(formattersFor("en").dateTime(CHECKS[1]!.last_test!.tested_at));
+    await expect((await rowOf(canvas, "vllm-lab")).getByText("Not tested")).toBeVisible();
+    await expectListTable(canvasElement, "Model Providers");
+  },
+};
+
+/** In Russian the column and its verdicts are Russian. */
+export const TheLastTestIsInTheListInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withChecks(CHECKS)}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(ru.pages.providers.colLastTest)).toBeVisible();
+    await expect(await canvas.findByText(/^Доступен · 643 мс$/)).toBeVisible();
+    await expect(canvas.getByText(ru.pages.providers.lastTest.never)).toBeVisible();
+  },
+};
+
+/**
+ * A key read from a variable the control plane cannot see is a key no request
+ * carries, so the cell says so in the warning tone and names the variable,
+ * rather than looking configured until every call answers 401 (#3649).
+ */
+export const AnUnsetKeyVariableIsAWarning: Story = {
+  render: () => (
+    <Harness fetchStub={withChecks(CHECKS)}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const unset = await rowOf(canvas, "anthropic-eu");
+    await expect(await unset.findByText(en.pages.providers.credentialEnvUnset)).toBeVisible();
+    const name = unset.getByText("ANTHROPIC_API_KEY");
+    await expect(noteOf(name)).toContain("does not see ANTHROPIC_API_KEY");
+    // a variable that is set reads as before
+    const set = await rowOf(canvas, "openai-prod");
+    await expect(set.getByText("OPENAI_API_KEY")).toBeVisible();
+    await expect(set.queryByText(en.pages.providers.credentialEnvUnset)).toBeNull();
+  },
+};
+
+/** A failed read of the checks says nothing in either column, rather than "not tested". */
+export const AFailedChecksReadSaysNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        if (String(input).includes("/provider-checks")) {
+          return json({ error: { message: "boom" } }, 500);
+        }
+        return withChecks(CHECKS)(input, init);
+      })}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await rowOf(canvas, "openai-prod");
+    await expect(canvas.queryByText(en.pages.providers.lastTest.never)).toBeNull();
+    await expect(canvas.queryByText(en.pages.providers.credentialEnvUnset)).toBeNull();
   },
 };
 

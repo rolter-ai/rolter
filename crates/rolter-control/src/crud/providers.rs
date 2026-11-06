@@ -13,8 +13,8 @@ use rolter_core::Error;
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::Provider;
 use rolter_store::postgres::repo::{
-    NewProvider, ProjectRepo, ProviderCacheProbeRepo, ProviderDeletion, ProviderKeyRepo,
-    ProviderRepo, ProviderUpdate,
+    ConnectionTestOutcome, NewProvider, ProjectRepo, ProviderCacheProbeRepo,
+    ProviderConnectionTestRepo, ProviderDeletion, ProviderKeyRepo, ProviderRepo, ProviderUpdate,
 };
 
 use super::{
@@ -49,6 +49,10 @@ pub(super) fn router() -> Router<ControlState> {
         .route(
             "/api/v1/orgs/{org_id}/provider-cache-probes",
             get(list_provider_cache_probes),
+        )
+        .route(
+            "/api/v1/orgs/{org_id}/provider-checks",
+            get(list_provider_checks),
         )
 }
 
@@ -391,7 +395,7 @@ async fn test_provider(
     let (secret, credential) = resolve_probe_credential(&state, id, api_key_env.as_deref()).await?;
 
     if credential == "stored (undecryptable)" || credential == "stored (KEK unset)" {
-        return Ok(Json(ProviderTestResult {
+        let result = ProviderTestResult {
             reachable: false,
             probed_url: String::new(),
             status: None,
@@ -403,7 +407,9 @@ async fn test_provider(
                 "the stored credential for '{name}' could not be read: {KEK_ENV} is unset or \
                  does not match the key it was sealed with. The upstream was not contacted."
             )),
-        }));
+        };
+        remember_test(&state, id, &result).await;
+        return Ok(Json(result));
     }
 
     let (url, headers) = rolter_core::probe_request(parsed_kind, &api_base, "/");
@@ -457,7 +463,28 @@ async fn test_provider(
         },
     };
 
+    remember_test(&state, id, &result).await;
     Ok(Json(result))
+}
+
+/// Keep what a test of a stored provider found, so the provider list can say
+/// how it last went without testing again (#3649). A write that fails is
+/// logged and dropped: the caller asked for the test, and has its answer.
+async fn remember_test(state: &ControlState, id: Uuid, result: &ProviderTestResult) {
+    let outcome = ConnectionTestOutcome {
+        reachable: result.reachable,
+        status: result.status,
+        latency_ms: result.latency_ms,
+        credential: result.credential,
+        models_found: result.models_found,
+        error: result.error.as_deref(),
+    };
+    if let Err(err) = ProviderConnectionTestRepo(pool(state))
+        .record(id, &outcome)
+        .await
+    {
+        tracing::warn!(provider_id = %id, error = %err, "could not keep the connection test");
+    }
 }
 
 /// Send the probe request through the connect-time egress client.
@@ -1823,6 +1850,106 @@ async fn list_provider_cache_probes(
             .filter(|probe| ids.contains(&probe.provider_id))
             .collect(),
     ))
+}
+
+/// What the control plane knows about one provider without calling it
+/// (#3649): whether the environment variable its key is read from is set, as
+/// the control plane sees it, and how its last connection test went.
+#[derive(Serialize)]
+struct ProviderCheck {
+    provider_id: Uuid,
+    /// `true` or `false` for a provider whose key is read from `api_key_env`;
+    /// absent for one with no variable, and for a name that holds a
+    /// control-plane secret, whose presence is not this endpoint's to tell.
+    /// The gateway reads its own environment, so this is the control plane's
+    /// view, as the connection test's `credential` is
+    #[serde(skip_serializing_if = "Option::is_none")]
+    env_set: Option<bool>,
+    /// absent for a provider never tested
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_test: Option<rolter_store::postgres::models::ProviderConnectionTest>,
+}
+
+/// Whether `name` is set in the control plane's environment, or `None` when it
+/// names a control-plane secret.
+fn env_presence(name: &str) -> Option<bool> {
+    env_presence_in(name, |name| std::env::var_os(name))
+}
+
+/// [`env_presence`] against any environment, so a test need not set one.
+fn env_presence_in(
+    name: &str,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<bool> {
+    if crate::secret_env::is_control_plane_secret(name) {
+        return None;
+    }
+    Some(lookup(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// The checks of the providers of `org_id` the caller may see, one per
+/// provider, in the listing's order.
+async fn list_provider_checks(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<ProviderCheck>>> {
+    let rows = ProviderRepo(pool(&state)).list(org_id).await?;
+    let visible = visible_in_scope(
+        &state,
+        &principal,
+        cap!("provider", Read),
+        org_id,
+        rows,
+        |row| row.project_id,
+    )
+    .await?;
+    let mut tests: HashMap<Uuid, rolter_store::postgres::models::ProviderConnectionTest> =
+        ProviderConnectionTestRepo(pool(&state))
+            .list(org_id)
+            .await?
+            .into_iter()
+            .map(|test| (test.provider_id, test))
+            .collect();
+    Ok(Json(
+        visible
+            .into_iter()
+            .map(|row| ProviderCheck {
+                provider_id: row.id,
+                env_set: row.api_key_env.as_deref().and_then(env_presence),
+                last_test: tests.remove(&row.id),
+            })
+            .collect(),
+    ))
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::env_presence_in;
+    use std::ffi::OsString;
+
+    /// an environment holding one provider key, set, and one set to nothing
+    fn env(name: &str) -> Option<OsString> {
+        match name {
+            "OPENAI_API_KEY" => Some("sk-test".into()),
+            "EMPTY_API_KEY" => Some(OsString::new()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_control_plane_secret_is_not_reported_even_when_set() {
+        let all_set = |_: &str| Some(OsString::from("x"));
+        assert_eq!(env_presence_in("ROLTER_KEK", all_set), None);
+        assert_eq!(env_presence_in("DATABASE_URL", all_set), None);
+    }
+
+    #[test]
+    fn a_set_variable_reads_as_set_and_an_unset_or_empty_one_as_unset() {
+        assert_eq!(env_presence_in("OPENAI_API_KEY", env), Some(true));
+        assert_eq!(env_presence_in("ANTHROPIC_API_KEY", env), Some(false));
+        assert_eq!(env_presence_in("EMPTY_API_KEY", env), Some(false));
+    }
 }
 
 #[cfg(test)]

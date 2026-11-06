@@ -24,7 +24,7 @@ Prompt-cache reads and writes are provider billing/usage concepts. They are dist
 
 ## Whether a provider reports cache metrics in the dashboard
 
-The verdicts of `provider_cache_probes` (see [the data model](data-model.md)) are shown on Providers, Models and Provider Groups by `CacheReportingBadge`, in three states that must stay apart: reports (success tone), no cache metrics (warning tone) and not probed yet (outline tone). A provider with no stored verdict is "not probed yet", never "no". Each verdict carries the time it was established, and its title the model and field spelling, so a stale or narrow verdict is visible as such.
+The verdicts of `provider_cache_probes` (see [the data model](data-model.md)) are shown on Providers, Models and Provider Groups by `CacheReportingBadge`, in states that must stay apart: reports (success tone) and no cache metrics (warning tone). A provider with no stored verdict is never "no": on Providers its cell is the probe button alone, and on Models a route no verdict covers shows nothing (#3649, #3659), where both used to badge "not probed yet" on every row. Provider Groups still shows that third, outline state. Each verdict carries the time it was established, and its title the model and field spelling, so a stale or narrow verdict is visible as such.
 
 A route or group has no verdict of its own; `summarizeCacheReporting` (`ui/src/lib/cache-reporting.ts`) derives it over the providers behind its targets or members:
 
