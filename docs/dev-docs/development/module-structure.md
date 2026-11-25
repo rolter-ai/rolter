@@ -112,6 +112,10 @@ into, plus one module cycle through `handlers`, `state` and nine other modules.
 Under `--all-features`, 21 `rolter-control` modules around `crud`, `auth` and
 `rbac` form one more cycle.
 
+Paying this down is tracked in epic [#3719], one child issue per cycle, per
+leaking type or per crate's layout. A PR that fixes listed debt names the child
+it closes and shrinks both lists with `just deslop-update`.
+
 ## Bumping the tool
 
 CI pins the version and the sha256 of the `x86_64-unknown-linux-musl` release
@@ -123,3 +127,4 @@ locally, and commit the workflow and both lists in one PR.
 
 [deslop-please]: https://github.com/deterministic-machines/deslop-please
 [#3717]: https://github.com/rolter-ai/rolter/issues/3717
+[#3719]: https://github.com/rolter-ai/rolter/issues/3719
