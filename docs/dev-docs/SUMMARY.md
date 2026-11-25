@@ -103,6 +103,7 @@
 - [Dashboard list tables](development/list-tables.md)
 - [Dashboard UX telemetry](development/ux-telemetry.md)
 - [Formatting markdown, MDX, JSON and YAML](development/formatting.md)
+- [Module structure lint (deslop-please)](development/module-structure.md)
 - [Commit conventions](development/commit-conventions.md)
 - [Issue tracking](development/issue-tracking.md)
 - [Merge protection on master](development/merge-protection.md)
