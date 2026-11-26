@@ -76,11 +76,34 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           toolchain: stable
-          components: rustfmt, clippy
+          # rust-analyzer and rust-src are deslop-please's: it reads the index
+          # `rust-analyzer scip` writes, which needs std's sources to resolve
+          components: rustfmt, clippy, rust-analyzer, rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !cancelled() }}
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      # the version and its sha256 are pinned here, like actionlint's: a new
+      # release that adds a lint must not fail every open pr with no change in
+      # this repo. taiki-e/install-action has no manifest for it, so the release
+      # tarball is fetched and verified by hand. to bump, change both values (the
+      # digest is the release's <tarball>.sha256) and regenerate both allowlists
+      # with `just deslop-update` in the same pr
+      - name: install deslop-please
+        id: deslop-install
+        if: ${{ !cancelled() }}
+        env:
+          DESLOP_VERSION: 0.1.4
+          DESLOP_SHA256: 4d2a26d55db443f652bc9bb1ce1821a18cae16dd6bed5356755a74036e2bf1ca
+        run: |
+          tarball="${RUNNER_TEMP}/deslop-please.tar.gz"
+          bindir="${RUNNER_TEMP}/deslop-please-bin"
+          curl -fsSL --retry 3 -o "${tarball}" \
+            "https://github.com/deterministic-machines/deslop-please/releases/download/v${DESLOP_VERSION}/deslop-please-x86_64-unknown-linux-musl-v${DESLOP_VERSION}.tar.gz"
+          echo "${DESLOP_SHA256}  ${tarball}" | sha256sum --check --strict -
+          mkdir -p "${bindir}"
+          tar -xzf "${tarball}" -C "${bindir}" deslop-please
+          echo "${bindir}" >> "${GITHUB_PATH}"
       - name: install cargo-hack
         id: cargo-hack
         if: ${{ !cancelled() }}
@@ -116,6 +139,25 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps --all-features
+
+      # ── module structure (deslop-please) ──────────────────────────────────
+      # module cycles, tangles, leaked fields, shallow modules, wide
+      # directories and long files (#3717). the debt master already had is
+      # listed per configuration in .deslop-please.allow and
+      # .deslop-please.all-features.allow: a listed entry passes, and fixing one
+      # never fails, but a new one does. the two configurations report
+      # different things (a field can leak in one and not the other), so each
+      # runs against its own list. each run indexes the workspace with
+      # `rust-analyzer scip`, which builds only build scripts and proc macros;
+      # see docs/dev-docs/development/module-structure.md
+      - name: deslop-please (default features)
+        id: deslop
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.deslop-install.outcome == 'success' }}
+        run: deslop-please --allow .deslop-please.allow
+      - name: deslop-please (all features)
+        id: deslop-all
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.deslop-install.outcome == 'success' }}
+        run: deslop-please --all-features --allow .deslop-please.all-features.allow
 
       # ── feature matrix ────────────────────────────────────────────────────
       # agents frequently break builds behind a cargo feature; check each in
@@ -163,6 +205,9 @@ jobs:
           OUTCOME_CLIPPY: ${{ steps.clippy.outcome }}
           OUTCOME_CLIPPY_POSTGRES: ${{ steps.clippy-postgres.outcome }}
           OUTCOME_DOC: ${{ steps.doc.outcome }}
+          OUTCOME_DESLOP_INSTALL: ${{ steps.deslop-install.outcome }}
+          OUTCOME_DESLOP: ${{ steps.deslop.outcome }}
+          OUTCOME_DESLOP_ALL: ${{ steps.deslop-all.outcome }}
           OUTCOME_HACK: ${{ steps.hack.outcome }}
           OUTCOME_CROSS_CRATE: ${{ steps.cross-crate.outcome }}
         run: |
@@ -205,6 +250,11 @@ jobs:
             "cargo clippy -p rolter-store -p rolter-control --all-targets --features postgres -- -D warnings"
           row "cargo doc (warnings = errors)" "cargo doc (warnings = errors)" "${OUTCOME_DOC}" \
             'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features'
+          row "module structure" "install deslop-please" "${OUTCOME_DESLOP_INSTALL}" "${setup}"
+          row "module structure" "deslop-please (default features)" "${OUTCOME_DESLOP}" \
+            "deslop-please --allow .deslop-please.allow"
+          row "module structure" "deslop-please (all features)" "${OUTCOME_DESLOP_ALL}" \
+            "deslop-please --all-features --allow .deslop-please.all-features.allow"
           row "feature matrix" "cargo hack (each feature)" "${OUTCOME_HACK}" \
             'RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --all-targets'
           row "feature matrix" "cross-crate feature combination (dependency postgres only)" "${OUTCOME_CROSS_CRATE}" \

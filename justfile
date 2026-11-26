@@ -44,6 +44,19 @@ fmt-docs-check:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# module-structure lint, the way the `rust lint` job runs it: no error beyond
+# the debt listed in the two allowlists, one per configuration. needs
+# deslop-please and rust-analyzer, see docs/dev-docs/development/module-structure.md
+deslop:
+    deslop-please --allow .deslop-please.allow
+    deslop-please --all-features --allow .deslop-please.all-features.allow
+
+# rewrite both allowlists from the current report, after fixing listed debt.
+# check that `git diff` on them only removes lines before committing
+deslop-update:
+    deslop-please --update-allow .deslop-please.allow
+    deslop-please --all-features --update-allow .deslop-please.all-features.allow
+
 # create rolter.toml from the example if it does not exist yet
 _config:
     #!/usr/bin/env bash
