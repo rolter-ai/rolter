@@ -9,6 +9,12 @@ ignore = [
   # only through tokenizers under rolter-gateway's off-by-default `onnx`
   # feature (#3443); no default build compiles it. removal is tracked in #3581
   { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained compile-time macro reached only through the off-by-default onnx feature; remove with #3581" },
+  # chrono and chrono-tz: unmaintained since 2026-11-25, no vulnerability and no
+  # safe upgrade. every crate in the workspace and sqlx's timestamptz support
+  # use chrono, and control validates a user's time zone name with chrono-tz,
+  # so the move to jiff or time is its own piece of work, tracked in #3733
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable; the workspace and sqlx depend on it until the migration in #3733" },
+  { id = "RUSTSEC-2026-0555", reason = "chrono-tz is unmaintained, not vulnerable; rolter-control depends on it until the migration in #3733" },
 ]
 
 [licenses]
